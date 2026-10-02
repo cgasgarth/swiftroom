@@ -41,6 +41,8 @@ final class ApplicationState: ObservableObject {
 @main
 struct NativePhotoApp: App {
     @StateObject private var application = ApplicationState()
+    @StateObject private var windowSizing = EditorWindowSizing()
+    @NSApplicationDelegateAdaptor(EditorApplicationDelegate.self) private var lifecycle
 
     var body: some Scene {
         Window("swiftroom", id: "editor") {
@@ -63,7 +65,9 @@ struct NativePhotoApp: App {
                     .padding(40)
                 }
             }
-            .frame(minWidth: 960, minHeight: 640)
+            .frame(minWidth: 960, minHeight: windowSizing.minimumContentHeight)
+            .background(EditorWindowLifecycle(store: application.store, applicationDelegate: lifecycle,
+                                              sizing: windowSizing))
         }
         .defaultSize(width: 1440, height: 960)
         .commands { EditorCommands(store: application.store) }

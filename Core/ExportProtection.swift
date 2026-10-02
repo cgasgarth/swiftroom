@@ -38,6 +38,13 @@ enum ExportProtection {
         let destination = request.destinationURL.resolvingSymlinksInPath().standardizedFileURL
         let sources = request.protectedSourceURLs + [request.sourceURL]
         let destinationIdentity = try identity(destination)
+        for catalog in request.protectedCatalogURLs {
+            let resolved = catalog.resolvingSymlinksInPath().standardizedFileURL
+            let catalogIdentity = try identity(resolved)
+            if resolved == destination || (destinationIdentity != nil && catalogIdentity == destinationIdentity) {
+                throw PhotoEngineError.unsupported("Export cannot replace a catalog file.")
+            }
+        }
         for source in sources {
             let resolved = source.resolvingSymlinksInPath().standardizedFileURL
             let sourceIdentity = try identity(resolved)

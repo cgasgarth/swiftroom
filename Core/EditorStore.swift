@@ -13,6 +13,7 @@ final class EditorStore: ObservableObject {
     @Published private(set) var isRendering = false
     @Published private(set) var isImporting = false
     @Published private(set) var isExporting = false
+    @Published private var editWorkCount = 0
     @Published private(set) var errorMessage: String?
     @Published private(set) var statusMessage = "Ready to import"
     @Published private(set) var lastExport: ExportResult?
@@ -32,6 +33,7 @@ final class EditorStore: ObservableObject {
     var selectedDocument: PhotoDocument? { documents.first { $0.id == selectedAssetID } }
     var canUndo: Bool { selectedDocument?.canUndo ?? false }
     var canRedo: Bool { selectedDocument?.canRedo ?? false }
+    var isUpdatingEdits: Bool { editWorkCount > 0 }
     var history: [HistoryEntry] { selectedDocument?.history ?? [] }
     var currentEdits: EditState { selectedDocument?.edits ?? .original }
     var exposureEV: Double { currentEdits.exposureEV }
@@ -49,6 +51,7 @@ final class EditorStore: ObservableObject {
     private var generation: UInt64 = 0
     private var editGestureAssetID: UUID?
     private var editGestureLabel: String?
+    private var moduleEditingSession: ModuleEditingSession?
     private var previewMaximumDimension = 2560
     private var retiredPreviews: [URL: RenderedPhoto] = [:]
     private var previewCleanup: Task<Void, Never>?
@@ -188,6 +191,8 @@ extension EditorStore {
     }
 
     func endEditing() {
+        moduleEditingSession?.task?.cancel()
+        moduleEditingSession = nil
         guard let id = editGestureAssetID, let index = documents.firstIndex(where: { $0.id == id }) else {
             editGestureAssetID = nil; editGestureLabel = nil; return
         }
@@ -215,7 +220,41 @@ extension EditorStore {
     }
 
     func useAsShotWhiteBalance() {
-        updateEdits(label: "As-shot white balance") { $0.temperature = nil; $0.tint = 0 }
+        Task {
+            do { _ = try await resetAsShotWhiteBalance() } catch is CancellationError { } catch {
+                reportError("Could not restore as-shot white balance: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    func resetAsShotWhiteBalance() async throws -> Bool {
+        guard capabilities.supportsWhiteBalance, let document = selectedDocument else { return false }
+        endEditing()
+        editWorkCount += 1
+        defer { editWorkCount -= 1 }
+        let source = try repository.sourceURL(for: document)
+        let baseline = currentEdits
+        let revision = editRevision
+        let startingGeneration = generation
+        let startingCatalogID = catalogID
+        let startingCatalogURL = catalogURL
+        let camera = try await CameraWhiteBalance.prepare(engine: engine, sourceURL: source,
+                                                        cacheURL: repository.cacheURL)
+        try Task.checkCancellation()
+        guard selectedAssetID == document.id, catalogID == startingCatalogID, catalogURL == startingCatalogURL,
+              currentEdits == baseline, editRevision == revision, generation == startingGeneration else { return false }
+        guard let cameraModule = camera.modules.first(where: { $0.operation == "temperature" && $0.instance == 0 }),
+              let index = baseline.modules.firstIndex(where: { $0.operation == "temperature" && $0.instance == 0 }),
+              baseline.modules[index].version == cameraModule.version else {
+            throw PhotoEngineError.unsupported("This photo has no compatible camera white-balance state.")
+        }
+        updateEdits(label: "As-shot white balance") {
+            $0.temperature = nil
+            $0.tint = 0
+            $0.modules[index].parameters = cameraModule.parameters
+            $0.modules[index].enabled = cameraModule.enabled
+        }
+        return true
     }
 
     func setModuleState(_ module: ModuleState) {
@@ -237,6 +276,8 @@ extension EditorStore {
               selectedAssetID == assetID, currentEdits == expectedEdits,
               expectedEdits.modules.contains(where: { $0.id == module.id }) else { return false }
         guard let document = selectedDocument else { return false }
+        editWorkCount += 1
+        defer { editWorkCount -= 1 }
         let startingGeneration = generation
         let startingCatalogURL = self.catalogURL
         let source = try repository.sourceURL(for: document)
@@ -285,6 +326,8 @@ extension EditorStore {
         guard let maskEngine = engine as? any MaskEditingEngine, self.catalogID == catalogID,
               selectedAssetID == assetID, currentEdits == expectedEdits, editRevision == expectedRevision,
               let document = selectedDocument else { return false }
+        editWorkCount += 1
+        defer { editWorkCount -= 1 }
         let startingGeneration = generation
         let startingCatalogURL = self.catalogURL
         let prepared = try await maskEngine.applyingMasks(
@@ -386,6 +429,9 @@ extension EditorStore {
     }
 
     func saveCatalog() throws {
+        guard !isUpdatingEdits else {
+            throw CatalogError.invalid("Wait for the current adjustment to finish before saving the catalog.")
+        }
         endEditing()
         var savedDocuments = documents
         for index in savedDocuments.indices { savedDocuments[index].savedEdits = savedDocuments[index].edits }
@@ -460,6 +506,7 @@ extension EditorStore {
             destinationURL: destination, format: format, colorSpace: colorSpace, quality: quality,
             maximumDimension: maximumDimension, protectedSourceURLs: sources,
             protectedDirectories: [catalogURL.appendingPathComponent("Originals")],
+            protectedCatalogURLs: [repository.catalogURL],
             overwriteAuthorization: overwriteAuthorization)
         try ExportProtection.validateOriginals(request)
         return request
@@ -467,12 +514,14 @@ extension EditorStore {
 
     func export(_ request: ExportRequest) async throws -> ExportResult {
         guard !isExporting else { throw PhotoEngineError.processing("An export is already in progress.") }
-        try ExportProtection.validate(request)
+        var protectedRequest = request
+        protectedRequest.protectedCatalogURLs.append(repository.catalogURL)
+        try ExportProtection.validate(protectedRequest)
         isExporting = true
         defer { isExporting = false }
         statusMessage = "Exporting photo…"
         do {
-            let result = try await engine.export(request)
+            let result = try await engine.export(protectedRequest)
             lastExport = result
             statusMessage = "Exported \(result.destinationURL.lastPathComponent)"
             return result
@@ -512,7 +561,10 @@ extension EditorStore {
 
     private var selectedIndex: Int? { documents.firstIndex { $0.id == selectedAssetID } }
 
-    private func updateEdits(label: String, mutation: (inout EditState) -> Void) {
+    private func updateEdits(
+        label: String, moduleEditingID: UUID? = nil, mutation: (inout EditState) -> Void
+    ) {
+        if let session = moduleEditingSession, session.id != moduleEditingID { endEditing() }
         guard let index = selectedIndex else { return }
         var edits = documents[index].edits
         mutation(&edits)
@@ -566,5 +618,97 @@ extension EditorStore {
                 }
             }
         } catch { isRendering = false; reportError(error.localizedDescription) }
+    }
+}
+
+extension EditorStore {
+    func beginCurrentModuleEditing(
+        assetID: UUID, catalogID: UUID, expectedEdits: EditState, moduleID: UUID, label: String
+    ) -> UUID? {
+        guard capabilities.supportsModuleEditing, self.catalogID == catalogID,
+              selectedAssetID == assetID, currentEdits == expectedEdits,
+              expectedEdits.modules.contains(where: { $0.id == moduleID }) else { return nil }
+        endEditing()
+        guard let document = selectedDocument else { return nil }
+        do {
+            let session = try ModuleEditingSession(document: document, store: self, moduleID: moduleID, label: label)
+            beginEditing(label)
+            session.expectedGeneration = generation
+            moduleEditingSession = session
+            return session.id
+        } catch { reportError(error.localizedDescription); return nil }
+    }
+
+    func previewCurrentModule(
+        editingID: UUID, module: ModuleState, values: [String: ModuleParameterValue]
+    ) async throws -> Bool {
+        guard let session = moduleEditingSession, session.id == editingID,
+              session.moduleID == module.id, moduleSessionIsCurrent(session) else { return false }
+        editWorkCount += 1
+        defer { editWorkCount -= 1 }
+        session.task?.cancel()
+        let requestID = UUID()
+        session.requestID = requestID
+        let baseline = session.baseline
+        let source = session.sourceURL
+        let cached = session.prepared
+        let task = Task { [engine] in
+            var prepared = cached ?? baseline
+            if cached == nil, baseline.exposureEV != 0 || baseline.temperature != nil || baseline.tint != 0 {
+                prepared = try await engine.prepare(sourceURL: source, edits: baseline).edits
+            }
+            try Task.checkCancellation()
+            for index in prepared.modules.indices {
+                if let existing = baseline.modules.first(where: {
+                    $0.operation == prepared.modules[index].operation && $0.instance == prepared.modules[index].instance
+                }) { prepared.modules[index].id = existing.id }
+            }
+            let frozen = prepared
+            guard let index = prepared.modules.firstIndex(where: { $0.id == module.id }) else {
+                throw PhotoEngineError.unsupported("This adjustment is unavailable in the current photo.")
+            }
+            prepared.modules[index] = try await engine.updating(module: prepared.modules[index], values: values)
+            prepared.modules[index].name = module.name
+            prepared.modules[index].enabled = module.enabled
+            try Task.checkCancellation()
+            return ModuleEditingResult(baseline: frozen, edits: prepared)
+        }
+        session.task = task
+        let result = try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+        }
+        try Task.checkCancellation()
+        guard moduleEditingSession === session, session.requestID == requestID,
+              moduleSessionIsCurrent(session) else { return false }
+        session.prepared = result.baseline
+        updateEdits(label: session.label, moduleEditingID: editingID) { $0 = result.edits }
+        session.expectedEdits = currentEdits
+        session.expectedRevision = editRevision
+        session.expectedGeneration = generation
+        return true
+    }
+
+    func endCurrentModuleEditing(_ editingID: UUID) {
+        guard moduleEditingSession?.id == editingID else { return }
+        endEditing()
+    }
+
+    func cancelCurrentModuleEditing(_ editingID: UUID) {
+        guard let session = moduleEditingSession, session.id == editingID else { return }
+        session.task?.cancel()
+        moduleEditingSession = nil
+        guard moduleSessionIsCurrent(session), let index = selectedIndex else { endEditing(); return }
+        documents[index].edits = session.baseline
+        editRevision &+= 1
+        endEditing()
+        requestRender(immediate: true)
+    }
+
+    private func moduleSessionIsCurrent(_ session: ModuleEditingSession) -> Bool {
+        selectedAssetID == session.assetID && catalogID == session.catalogID && catalogURL == session.catalogURL
+            && currentEdits == session.expectedEdits && editRevision == session.expectedRevision
+            && generation == session.expectedGeneration
     }
 }

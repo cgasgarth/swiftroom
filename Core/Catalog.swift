@@ -123,6 +123,10 @@ struct CatalogRepository: Sendable {
         guard url.path.hasPrefix(rootURL.standardizedFileURL.path + "/Originals/") else {
             throw CatalogError.invalid("The original is outside this catalog.")
         }
+        let root = rootURL.resolvingSymlinksInPath().standardizedFileURL
+        guard url.resolvingSymlinksInPath().standardizedFileURL.path.hasPrefix(root.path + "/Originals/") else {
+            throw CatalogError.invalid("The catalog original links outside this catalog.")
+        }
         return url
     }
 
@@ -131,19 +135,31 @@ struct CatalogRepository: Sendable {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let destination = directory.appendingPathComponent(source.lastPathComponent)
         do {
-            try FileManager.default.copyItem(at: source, to: destination)
+            let resolvedSource = source.resolvingSymlinksInPath().standardizedFileURL
+            try copyRegularFile(from: resolvedSource, to: destination)
             let sidecarCandidates = [
                 URL(fileURLWithPath: source.path + ".xmp"),
-                source.deletingPathExtension().appendingPathExtension("xmp")
+                source.deletingPathExtension().appendingPathExtension("xmp"),
+                URL(fileURLWithPath: resolvedSource.path + ".xmp"),
+                resolvedSource.deletingPathExtension().appendingPathExtension("xmp")
             ]
             if let sidecar = sidecarCandidates.first(where: { FileManager.default.fileExists(atPath: $0.path) }) {
-                try FileManager.default.copyItem(at: sidecar, to: URL(fileURLWithPath: destination.path + ".xmp"))
+                try copyRegularFile(from: sidecar.resolvingSymlinksInPath(),
+                                    to: URL(fileURLWithPath: destination.path + ".xmp"))
             }
         } catch {
             try? FileManager.default.removeItem(at: directory)
             throw error
         }
         return "Originals/\(id.uuidString)/\(source.lastPathComponent)"
+    }
+
+    private func copyRegularFile(from source: URL, to destination: URL) throws {
+        let attributes = try FileManager.default.attributesOfItem(atPath: source.path)
+        guard attributes[.type] as? FileAttributeType == .typeRegular else {
+            throw CatalogError.invalid("Only regular image and XMP files can be imported.")
+        }
+        try FileManager.default.copyItem(at: source, to: destination)
     }
 }
 

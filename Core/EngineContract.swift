@@ -89,6 +89,7 @@ struct ExportRequest: Sendable {
     var maximumDimension: Int?
     var protectedSourceURLs: [URL] = []
     var protectedDirectories: [URL] = []
+    var protectedCatalogURLs: [URL] = []
     var overwriteAuthorization: ExportOverwriteAuthorization?
 }
 
