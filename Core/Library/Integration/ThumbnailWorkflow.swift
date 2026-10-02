@@ -47,6 +47,7 @@ enum ThumbnailWorkflow {
             let revised = try await verifyRevision(store: store, service: service, id: ids[1],
                 third: third, second: second, original: (url: secondURL, pixels: originalPixels))
             try await verifyReset(store: store, service: service, ids: ids, root: root, revised: revised)
+            try await verifyStoreAPI(store: store, id: ids[0])
             try verifyOriginals(store: store, fixture: fixture, expectedDigest: originalDigest)
             print("PASS source and catalog-original SHA256 unchanged")
             print("THUMBNAIL INTEGRATION PASS \(root.path)")
@@ -87,6 +88,7 @@ enum ThumbnailWorkflow {
         await third.value
         store.selectAsset(id)
         store.setExposure(1)
+        try require(service.urls[id] == nil, "The current getter exposed an old edit revision.")
         await store.waitForRender()
         guard let canvas = store.preview else { throw ThumbnailFailure(message: "Exposure lost the canvas frame.") }
         let revised = Task { await service.request(id) }
@@ -109,6 +111,35 @@ enum ThumbnailWorkflow {
 }
 
 extension ThumbnailWorkflow {
+    @MainActor
+    private static func verifyStoreAPI(store: EditorStore, id: UUID) async throws {
+        await store.waitForRender()
+        let catalogURL = store.catalogURL
+        let generation = store.thumbnailGeneration
+        let lease = Task { await store.requestThumbnail(id) }
+        try await waitUntil { store.thumbnailURLs[id] != nil }
+        guard let thumbnailURL = store.thumbnailURLs[id] else {
+            throw ThumbnailFailure(message: "The shared store API did not return a thumbnail.")
+        }
+        _ = try verifyImage(thumbnailURL)
+        await store.waitForThumbnails()
+        try require(store.thumbnailErrors.isEmpty, "The shared API reported a thumbnail failure.")
+        try store.openCatalog(at: catalogURL)
+        await lease.value
+        await store.waitForThumbnails()
+        try require(store.thumbnailGeneration != generation && store.thumbnailURLs.isEmpty,
+            "Same-catalog reopen retained the previous generation.")
+        try await waitUntil { !FileManager.default.fileExists(atPath: thumbnailURL.path) }
+        let reopened = Task { await store.requestThumbnail(id) }
+        try await waitUntil { store.thumbnailURLs[id] != nil }
+        reopened.cancel()
+        await reopened.value
+        try store.openCatalog(at: catalogURL)
+        await store.waitForThumbnails()
+        try require(store.thumbnailURLs.isEmpty, "Reset did not clear the shared thumbnail API.")
+        print("PASS shared EditorStore API, same-catalog generation, lease restart and automatic reset")
+    }
+
     @MainActor
     private static func verifyOriginals(store: EditorStore, fixture: URL, expectedDigest: String) throws {
         try require(try fileDigest(fixture) == expectedDigest, "The source RAW changed.")
