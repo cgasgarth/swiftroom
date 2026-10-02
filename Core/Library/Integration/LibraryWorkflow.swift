@@ -125,9 +125,16 @@ enum LibraryWorkflow {
     private static func verifyFiltering(model: LibraryController, ids: [UUID]) throws {
         model.setRating(4)
         try require(model.store.documents.allSatisfy { $0.rating == 4 }, "Batch rating omitted selected photos.")
+        model.select([ids[1]])
+        let historyCount = model.store.history.count
+        model.store.beginEditing("Exposure")
+        model.store.setExposure(0.25)
         model.query.rating = .five
         try require(model.visibleDocuments.isEmpty && model.store.selectedAssetID == nil,
             "A hidden photo remained active after filtering.")
+        let hidden = model.store.documents.first { $0.id == ids[1] }
+        try require(hidden?.edits.exposureEV == 0.25 && hidden?.history.count == historyCount + 1,
+            "Filtering the active photo lost its pending adjustment or gesture history.")
         model.query.rating = .three
         model.select([ids[0]])
         model.setRating(2)
@@ -160,15 +167,22 @@ enum LibraryWorkflow {
         try require(model.visibleDocuments.map(\.id) == [ids[1]], "Filename search did not find the expected photo.")
         model.query.search = "BRAVO missing"
         try require(model.visibleDocuments.isEmpty, "Search tokens did not combine.")
+        try verifySorting(model: model, ids: ids)
+        print("PASS live rating/favorite/rejection filters, hidden selection, search and stable sorting")
+    }
+
+    @MainActor
+    private static func verifySorting(model: LibraryController, ids: [UUID]) throws {
         model.resetFilters()
         model.query.descending = true
         try require(model.visibleDocuments.map(\.id) == ids.reversed(), "Reverse filename sort is incorrect.")
         model.query.sort = .rating
         try require(model.visibleDocuments.last?.id == ids[0], "Rating sort is incorrect.")
         model.resetFilters()
-        print("PASS live rating/favorite/rejection filters, hidden selection, search and stable sorting")
     }
+}
 
+extension LibraryWorkflow {
     @MainActor
     private static func verifyCollections(model: LibraryController, ids: [UUID]) throws {
         model.selectAll()
