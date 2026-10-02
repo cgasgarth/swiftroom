@@ -8,18 +8,19 @@ struct AdvancedModuleFields: View {
     var onValidity: (String, Bool) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
+        VStack(alignment: .leading, spacing: 16) {
             fieldGroup("Values", fields: schema.fields.filter(\.isNumeric))
             fieldGroup(
                 "Options", fields: schema.fields.filter { $0.kind == .bool || $0.kind == .enumeration })
             fieldGroup("Retained Parameters", fields: schema.fields.filter { $0.kind == .other })
+            metadata
         }
     }
 
     @ViewBuilder
     private func fieldGroup(_ title: String, fields: [ModuleParameterField]) -> some View {
         if !fields.isEmpty {
-            VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 12) {
                 Text(title).font(.headline)
                 ForEach(fields) { field in
                     if let value = values[field.name] {
@@ -50,7 +51,6 @@ struct AdvancedModuleFields: View {
                     Spacer()
                     reset(field, value: value)
                 }
-                defaultLabel(field)
             }
         } else if field.kind == .enumeration {
             VStack(alignment: .leading, spacing: 6) {
@@ -74,7 +74,6 @@ struct AdvancedModuleFields: View {
                     .accessibilityIdentifier("advanced.value.\(field.name)")
                     reset(field, value: value)
                 }
-                defaultLabel(field)
             }
         } else {
             readOnly(field, value: value.entryText)
@@ -96,13 +95,28 @@ struct AdvancedModuleFields: View {
         .accessibilityIdentifier("advanced.reset.\(field.name)")
     }
 
-    @ViewBuilder
-    private func defaultLabel(_ field: ModuleParameterField) -> some View {
+    private var metadata: some View {
+        DisclosureGroup("Ranges & Defaults") {
+            VStack(alignment: .leading, spacing: 10) {
+                ForEach(schema.fields) { field in
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(field.displayTitle).font(.callout)
+                        if let bounds = field.boundsDescription { Text(bounds) }
+                        if let text = defaultText(field) { Text("Default \(text)") }
+                    }
+                }
+            }
+            .font(.caption).foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true).padding(.top, 6)
+        }
+    }
+
+    private func defaultText(_ field: ModuleParameterField) -> String? {
         if let defaultValue = field.defaultValue {
             let choice = field.choices.first { $0.value == field.choiceValue(for: defaultValue) }
-            let text = choice?.title ?? choice?.name ?? defaultValue.entryText
-            Text("Default \(text)").font(.caption).foregroundStyle(.secondary)
+            return choice?.title ?? choice?.name ?? field.displayText(for: defaultValue)
         }
+        return nil
     }
 
     private func readOnly(_ field: ModuleParameterField, value: String) -> some View {

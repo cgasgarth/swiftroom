@@ -19,7 +19,7 @@ struct AdvancedModuleInspector: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 12) {
             operationBrowser
             if editor.isLoading {
                 HStack {
@@ -94,10 +94,10 @@ struct AdvancedModuleInspector: View {
             .pickerStyle(.menu)
             .disabled(editor.isApplying || editor.operations.isEmpty)
             .accessibilityIdentifier("advanced.operation")
-            Text(
-                "\(filteredOperations.count) operations · \(editor.instances.count) instances of this operation"
-            )
-            .font(.caption).foregroundStyle(.secondary)
+            if search.isEmpty {
+                Text("\(filteredOperations.count) operations")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -113,8 +113,6 @@ struct AdvancedModuleInspector: View {
     private var moduleIdentity: some View {
         VStack(alignment: .leading, spacing: 10) {
             Divider()
-            Text(editor.selectedDescriptor?.title ?? editor.selectedOperation).font(.headline)
-            Text(editor.selectedOperation).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
             if !editor.instances.isEmpty {
                 Picker(
                     "Instance",
@@ -130,10 +128,17 @@ struct AdvancedModuleInspector: View {
                 }
                 .pickerStyle(.menu).disabled(editor.isApplying)
                 .accessibilityIdentifier("advanced.instance")
-                if let module = editor.instances.first(where: { $0.id == editor.selectedModuleID }) {
-                    Text("Version \(module.version) · Instance \(module.instance + 1)")
-                        .font(.caption).foregroundStyle(.secondary)
+            }
+            DisclosureGroup("Module Details") {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Operation: \(editor.selectedOperation)")
+                    if let module = editor.instances.first(where: { $0.id == editor.selectedModuleID }) {
+                        Text("Version \(module.version) · Instance \(module.instance + 1)")
+                        if let name = module.name { Text("Engine label: \(name)") }
+                    }
                 }
+                .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                .padding(.top, 6)
             }
         }
     }
@@ -148,11 +153,16 @@ struct AdvancedModuleInspector: View {
             Text("This operation does not expose a parameter schema. Its complete state is retained.")
                 .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         } else if let schema = editor.schema, editor.hasLoadedValues, !editor.isLoading {
-            VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 12) {
                 Toggle("Module enabled", isOn: $editor.draftEnabled)
                     .toggleStyle(.checkbox).disabled(!editor.canEdit)
                     .accessibilityIdentifier("advanced.enabled")
-                TextField("Instance label", text: $editor.draftName)
+                TextField("Instance label", text: Binding(
+                    get: { editor.draftName.advancedInstanceLabel },
+                    set: { text in
+                        if text != editor.draftName.advancedInstanceLabel { editor.draftName = text }
+                    }
+                ))
                     .textFieldStyle(.roundedBorder).disabled(!editor.canEdit)
                     .accessibilityIdentifier("advanced.name")
                 if !editor.nameIsValid {
@@ -202,13 +212,13 @@ struct AdvancedModuleInspector: View {
     }
 
     private var supportNotice: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Divider()
-            Text("Values use the engine's native units; unit labels are unavailable.")
-            Text(
-                "Curve points, masks, blending and new instances do not have native controls yet. "
-                    + "Existing data is retained."
-            )
+        DisclosureGroup("Engine Support") {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Values use the engine's native units; unit labels are unavailable.")
+                Text("Masks includes numeric geometry and supported blending. Curves, parametric masks, "
+                    + "canvas drawing and new instances are unavailable. Existing data is retained.")
+            }
+            .padding(.top, 6)
         }
         .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
     }
@@ -220,7 +230,7 @@ struct AdvancedModuleInspector: View {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(field.displayTitle).font(.callout)
                         if let bounds = field.boundsDescription { Text(bounds) }
-                        if let value = field.defaultValue { Text("Schema default \(value.entryText)") }
+                        if let value = field.defaultValue { Text("Schema default \(field.displayText(for: value))") }
                     }
                     .font(.caption).foregroundStyle(.secondary)
                 }
@@ -229,7 +239,7 @@ struct AdvancedModuleInspector: View {
     }
 
     private func instanceTitle(_ module: ModuleState) -> String {
-        if let name = module.name, !name.isEmpty { return "\(module.instance + 1): \(name)" }
+        if let name = module.name, !name.isEmpty { return "\(module.instance + 1): \(name.advancedInstanceLabel)" }
         return "Instance \(module.instance + 1)"
     }
 }

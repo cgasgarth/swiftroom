@@ -8,6 +8,7 @@ struct AdvancedNumericField: View {
     var onValidity: (Bool) -> Void
     @State private var draft = ""
     @State private var validationMessage: String?
+    @State private var didEdit = false
     @FocusState private var isFocused: Bool
 
     var body: some View {
@@ -15,7 +16,7 @@ struct AdvancedNumericField: View {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text(field.displayTitle).font(.body)
                 Spacer(minLength: 4)
-                TextField(field.displayTitle, text: $draft)
+                TextField(field.displayTitle, text: Binding(get: { draft }, set: editDraft))
                     .textFieldStyle(.roundedBorder)
                     .multilineTextAlignment(.trailing)
                     .monospacedDigit()
@@ -25,44 +26,53 @@ struct AdvancedNumericField: View {
                     .onExitCommand(perform: discard)
                     .accessibilityIdentifier("advanced.value.\(field.name)")
                     .accessibilityLabel("\(field.displayTitle), exact value")
+                    .help("Exact value: \(value.entryText)")
                 resetButton
             }
             if let range = field.sliderRange(for: value) {
-                Slider(
-                    value: Binding(get: { value.doubleValue ?? range.lowerBound }, set: updateSlider),
-                    in: range, step: field.isInteger ? 1 : sliderStep(range)
-                )
-                .accessibilityLabel(field.displayTitle)
-                .accessibilityIdentifier("advanced.slider.\(field.name)")
+                slider(range)
             }
             if let validationMessage {
                 Label(validationMessage, systemImage: "exclamationmark.circle")
                     .font(.caption).foregroundStyle(.red)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            HStack(alignment: .top) {
-                if let bounds = field.boundsDescription { Text(bounds) }
-                Spacer(minLength: 4)
-                if let defaultValue = field.defaultValue { Text("Default \(defaultValue.entryText)") }
-            }
-            .font(.caption).foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
         }
-        .onAppear { draft = value.entryText }
+        .onAppear { draft = field.displayText(for: value) }
         .onChange(of: value) { _, updated in
-            if !isFocused { draft = updated.entryText }
+            if !isFocused, validationMessage == nil { draft = field.displayText(for: updated) }
         }
-        .onChange(of: draft) { _, _ in validateDraft() }
         .onChange(of: isFocused) { _, focused in
-            if !focused { commit() }
+            if focused {
+                if validationMessage == nil { draft = value.entryText }
+                didEdit = false
+            } else {
+                commit()
+            }
         }
+    }
+
+    private func slider(_ range: ClosedRange<Double>) -> some View {
+        let binding = Binding(get: { value.doubleValue ?? range.lowerBound }, set: updateSlider)
+        return Group {
+            if field.isInteger, range.upperBound - range.lowerBound <= 20 {
+                Slider(value: binding, in: range, step: 1)
+            } else {
+                Slider(value: binding, in: range)
+            }
+        }
+        .accessibilityLabel(field.displayTitle)
+        .accessibilityIdentifier("advanced.slider.\(field.name)")
     }
 
     private var resetButton: some View {
         Button {
             guard let defaultValue = field.defaultValue, field.accepts(defaultValue) else { return }
             isFocused = false
-            draft = defaultValue.entryText
+            didEdit = false
+            draft = field.displayText(for: defaultValue)
+            validationMessage = nil
+            onValidity(true)
             onSet(defaultValue)
         } label: {
             Image(systemName: "arrow.counterclockwise")
@@ -74,8 +84,10 @@ struct AdvancedNumericField: View {
         .accessibilityIdentifier("advanced.reset.\(field.name)")
     }
 
-    private func sliderStep(_ range: ClosedRange<Double>) -> Double {
-        max(0.000_001, min(0.01, (range.upperBound - range.lowerBound) / 1000))
+    private func editDraft(_ text: String) {
+        draft = text
+        didEdit = true
+        validateDraft()
     }
 
     private func updateSlider(_ number: Double) {
@@ -87,7 +99,10 @@ struct AdvancedNumericField: View {
             updated = .number(number)
         }
         guard field.accepts(updated) else { return }
-        draft = updated.entryText
+        didEdit = false
+        draft = isFocused ? updated.entryText : field.displayText(for: updated)
+        validationMessage = nil
+        onValidity(true)
         onSet(updated)
     }
 
@@ -102,18 +117,24 @@ struct AdvancedNumericField: View {
     }
 
     private func commit() {
+        guard didEdit else {
+            if validationMessage == nil { draft = isFocused ? value.entryText : field.displayText(for: value) }
+            return
+        }
         guard let updated = field.parsedValue(draft) else {
             validateDraft()
             return
         }
         onSet(updated)
-        draft = updated.entryText
+        didEdit = false
+        draft = isFocused ? updated.entryText : field.displayText(for: updated)
         validationMessage = nil
         onValidity(true)
     }
 
     private func discard() {
-        draft = value.entryText
+        didEdit = false
+        draft = field.displayText(for: value)
         validationMessage = nil
         onValidity(true)
         isFocused = false

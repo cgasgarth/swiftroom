@@ -19,12 +19,16 @@ extension ModuleParameterField {
 
     var boundsDescription: String? {
         if let minimum, let maximum {
-            return "Range \(ModuleParameterValue.number(minimum).entryText) … "
-                + ModuleParameterValue.number(maximum).entryText
+            return "Range \(displayText(for: .number(minimum))) … " + displayText(for: .number(maximum))
         }
-        if let minimum { return "Minimum \(ModuleParameterValue.number(minimum).entryText)" }
-        if let maximum { return "Maximum \(ModuleParameterValue.number(maximum).entryText)" }
+        if let minimum { return "Minimum \(displayText(for: .number(minimum)))" }
+        if let maximum { return "Maximum \(displayText(for: .number(maximum)))" }
         return nil
+    }
+
+    func displayText(for value: ModuleParameterValue) -> String {
+        guard case .number(let number) = value else { return value.entryText }
+        return String(format: "%.*g", locale: Locale(identifier: "en_US_POSIX"), kind == .float ? 7 : 10, number)
     }
 
     func accepts(_ value: ModuleParameterValue) -> Bool {
@@ -112,5 +116,13 @@ extension ModuleParameterValue {
         case .boolean(let value): value ? "On" : "Off"
         case .text(let value): value
         }
+    }
+}
+
+extension String {
+    var advancedInstanceLabel: String {
+        guard hasPrefix("_builtin_") else { return self }
+        let label = dropFirst(9).replacingOccurrences(of: "_", with: " ")
+        return label.prefix(1).uppercased() + label.dropFirst()
     }
 }
