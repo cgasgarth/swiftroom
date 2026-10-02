@@ -63,7 +63,9 @@ struct PhotoCatalog: Codable, Sendable {
 enum CatalogError: LocalizedError {
     case invalid(String)
     var errorDescription: String? {
-        switch self { case .invalid(let text): return text }
+        switch self {
+        case .invalid(let text): return text
+        }
     }
 }
 
@@ -75,7 +77,8 @@ struct CatalogRepository: Sendable {
     func prepare() throws {
         try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: cacheURL, withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: rootURL.appendingPathComponent("Originals"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+            at: rootURL.appendingPathComponent("Originals"), withIntermediateDirectories: true)
     }
 
     func load() throws -> PhotoCatalog {
@@ -84,7 +87,9 @@ struct CatalogRepository: Sendable {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         let catalog = try decoder.decode(PhotoCatalog.self, from: Data(contentsOf: catalogURL))
-        guard catalog.schemaVersion == 1 else { throw CatalogError.invalid("This catalog uses an unsupported version.") }
+        guard catalog.schemaVersion == 1 else {
+            throw CatalogError.invalid("This catalog uses an unsupported version.")
+        }
         guard Set(catalog.documents.map(\.id)).count == catalog.documents.count else {
             throw CatalogError.invalid("The catalog contains duplicate photo identifiers.")
         }
@@ -107,7 +112,8 @@ struct CatalogRepository: Sendable {
 
     func sourceURL(for document: PhotoDocument) throws -> URL {
         let relative = document.relativeOriginalPath
-        guard relative.hasPrefix("Originals/"), !relative.split(separator: "/").contains(".."), !relative.hasPrefix("/") else {
+        guard relative.hasPrefix("Originals/"), !relative.split(separator: "/").contains(".."),
+              !relative.hasPrefix("/") else {
             throw CatalogError.invalid("The catalog contains an unsafe original path.")
         }
         let url = rootURL.appendingPathComponent(relative).standardizedFileURL
@@ -121,8 +127,19 @@ struct CatalogRepository: Sendable {
         let directory = rootURL.appendingPathComponent("Originals/\(id.uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let destination = directory.appendingPathComponent(source.lastPathComponent)
-        do { try FileManager.default.copyItem(at: source, to: destination) }
-        catch { try? FileManager.default.removeItem(at: directory); throw error }
+        do {
+            try FileManager.default.copyItem(at: source, to: destination)
+            let sidecarCandidates = [
+                URL(fileURLWithPath: source.path + ".xmp"),
+                source.deletingPathExtension().appendingPathExtension("xmp")
+            ]
+            if let sidecar = sidecarCandidates.first(where: { FileManager.default.fileExists(atPath: $0.path) }) {
+                try FileManager.default.copyItem(at: sidecar, to: URL(fileURLWithPath: destination.path + ".xmp"))
+            }
+        } catch {
+            try? FileManager.default.removeItem(at: directory)
+            throw error
+        }
         return "Originals/\(id.uuidString)/\(source.lastPathComponent)"
     }
 }

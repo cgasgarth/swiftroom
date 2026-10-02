@@ -1,0 +1,21 @@
+strict: true
+opt_in_rules:
+  - empty_count
+  - empty_string
+  - explicit_init
+  - first_where
+  - force_unwrapping
+  - sorted_imports
+  - contains_over_filter_count
+  - contains_over_filter_is_empty
+  - contains_over_first_not_nil
+  - fatal_error_message
+  - private_swiftui_state
+  - unused_optional_binding
+excluded:
+  - build
+  - Engine/Upstream
+  - Engine/Build
+  - Engine/Artifacts
+  - Engine/Fixtures
+  - QA/Temporary
