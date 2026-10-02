@@ -322,7 +322,9 @@ extension EditorStore {
     }
 
     func openCatalog(at url: URL) throws {
-        guard !isImporting else { throw CatalogError.invalid("Wait for photo import to finish before opening a catalog.") }
+        guard !isImporting else {
+            throw CatalogError.invalid("Wait for photo import to finish before opening a catalog.")
+        }
         if hasUnsavedChanges { try saveCatalog() }
         let nextRepository = CatalogRepository(rootURL: url)
         let nextCatalog = try nextRepository.load()

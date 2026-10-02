@@ -53,7 +53,7 @@ struct PhotoDocument: Codable, Equatable, Identifiable, Sendable {
 }
 
 struct PhotoCatalog: Codable, Sendable {
-    var schemaVersion: Int = 1
+    var schemaVersion: Int = 2
     var id: UUID = UUID()
     var createdAt: Date = Date()
     var documents: [PhotoDocument] = []
@@ -85,12 +85,14 @@ struct CatalogRepository: Sendable {
     func load() throws -> PhotoCatalog {
         try prepare()
         guard FileManager.default.fileExists(atPath: catalogURL.path) else { return PhotoCatalog() }
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        let catalog = try decoder.decode(PhotoCatalog.self, from: Data(contentsOf: catalogURL))
-        guard catalog.schemaVersion == 1 else {
+        let data = try Data(contentsOf: catalogURL)
+        let header = try JSONDecoder().decode(CatalogHeader.self, from: data)
+        guard header.schemaVersion == 2 else {
             throw CatalogError.invalid("This catalog uses an unsupported version.")
         }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .deferredToDate
+        let catalog = try decoder.decode(PhotoCatalog.self, from: data)
         guard Set(catalog.documents.map(\.id)).count == catalog.documents.count else {
             throw CatalogError.invalid("The catalog contains duplicate photo identifiers.")
         }
@@ -107,7 +109,7 @@ struct CatalogRepository: Sendable {
         try prepare()
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        encoder.dateEncodingStrategy = .iso8601
+        encoder.dateEncodingStrategy = .deferredToDate
         try encoder.encode(catalog).write(to: catalogURL, options: .atomic)
     }
 
@@ -143,4 +145,8 @@ struct CatalogRepository: Sendable {
         }
         return "Originals/\(id.uuidString)/\(source.lastPathComponent)"
     }
+}
+
+private struct CatalogHeader: Decodable {
+    var schemaVersion: Int
 }
