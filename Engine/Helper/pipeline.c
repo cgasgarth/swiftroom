@@ -34,6 +34,8 @@ static void blob(JsonBuilder *builder, const char *key, const void *data, size_t
 
 static gboolean apply_modules(dt_develop_t *dev, JsonArray *entries, char **err)
 {
+  dt_iop_module_t *previous = NULL;
+  double previous_order = -G_MAXDOUBLE;
   for(guint i = 0; entries && i < json_array_get_length(entries); i++)
   {
     JsonObject *entry = json_array_get_object_element(entries, i);
@@ -49,6 +51,17 @@ static gboolean apply_modules(dt_develop_t *dev, JsonArray *entries, char **err)
       if(!module) { *err = g_strdup("module duplication failed"); return FALSE; }
       dt_iop_update_multi_priority(module, priority);
     }
+    const double desired_order = number(entry, "order", module->iop_order);
+    if(desired_order < previous_order)
+    { *err = g_strdup("module state must be sorted by requested pipeline order"); return FALSE; }
+    if(previous && module->iop_order <= previous->iop_order)
+    {
+      if(!dt_ioppr_check_can_move_after_iop(dev->iop, module, previous)
+          || !dt_ioppr_move_iop_after(dev, module, previous))
+      { *err = g_strdup_printf("pipeline rules forbid placing %s after %s", op, previous->op); return FALSE; }
+    }
+    previous = module;
+    previous_order = desired_order;
     if(module->version() != (int)number(entry, "version", -1))
     { *err = g_strdup_printf("module version mismatch: %s", op); return FALSE; }
     if(json_object_has_member(entry, "parameters"))
@@ -74,8 +87,12 @@ static gboolean apply_modules(dt_develop_t *dev, JsonArray *entries, char **err)
     }
     if(json_object_has_member(entry, "name"))
     {
-      g_strlcpy(module->multi_name, json_object_get_string_member(entry, "name"), sizeof(module->multi_name));
-      module->multi_name_hand_edited = TRUE;
+      const char *name = json_object_get_string_member(entry, "name");
+      if(strcmp(name, module->multi_name))
+      {
+        g_strlcpy(module->multi_name, name, sizeof(module->multi_name));
+        module->multi_name_hand_edited = TRUE;
+      }
     }
     module->enabled = json_object_get_boolean_member(entry, "enabled");
     dt_dev_add_history_item_ext(dev, module, module->enabled, TRUE);
@@ -106,8 +123,10 @@ static gboolean apply_adjustments(dt_develop_t *dev, JsonObject *edits, char **e
     dt_dev_add_history_item_ext(dev, module, TRUE, TRUE);
   }
   JsonNode *temperature = json_object_get_member(edits, "temperature");
-  if(temperature && !JSON_NODE_HOLDS_NULL(temperature)
-      && !np_white_balance(dev, json_node_get_double(temperature), number(edits, "tint", 0), err)) return FALSE;
+  const double tint = number(edits, "tint", 0);
+  const gboolean has_temperature = temperature && !JSON_NODE_HOLDS_NULL(temperature);
+  if((has_temperature || tint != 0)
+      && !np_white_balance(dev, has_temperature ? json_node_get_double(temperature) : 0, tint, err)) return FALSE;
   return TRUE;
 }
 

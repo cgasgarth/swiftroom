@@ -97,8 +97,10 @@ actor DarktablePhotoEngine: PhotoEngine {
         let history = directory.appendingPathComponent("history.xmp")
         if let xmp { try xmp.write(to: history, options: .atomic) }
         let output = directory.appendingPathComponent("render.\(format.fileExtension)")
+        var orderedEdits = edits
+        orderedEdits.modules.sort { $0.order < $1.order }
         let wire = HelperWireRequest(
-            source: source.path, xmp: xmp == nil ? nil : history.path, edits: edits,
+            source: source.path, xmp: xmp == nil ? nil : history.path, edits: orderedEdits,
             destination: output.path, format: format == .jpeg ? "jpeg" : format.rawValue,
             colorSpace: colorSpace.rawValue, maximumDimension: max(0, maximumDimension),
             quality: Int((min(1, max(0, quality)) * 100).rounded())
@@ -128,6 +130,8 @@ actor DarktablePhotoEngine: PhotoEngine {
 
     private func validate(_ url: URL) throws -> (width: Int, height: Int) {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              properties[kCGImagePropertyProfileName] != nil,
               let image = CGImageSourceCreateImageAtIndex(source, 0, nil),
               image.width > 0, image.height > 0, image.colorSpace?.copyICCData() != nil else {
             throw PhotoEngineError.invalidOutput("darktable did not produce a decodable ICC-tagged image.")

@@ -146,6 +146,32 @@ static cmsCIEXYZ _temperature_tint_to_XYZ(double TempK, double tint)
 }
 
 
+static void _XYZ_to_temperature(cmsCIEXYZ XYZ, float *TempK, float *tint)
+{
+  double maxtemp = DT_IOP_HIGHEST_TEMPERATURE, mintemp = DT_IOP_LOWEST_TEMPERATURE;
+  cmsCIEXYZ _xyz;
+
+  for(*TempK = (maxtemp + mintemp) / 2.0;
+      (maxtemp - mintemp) > 1.0;
+      *TempK = (maxtemp + mintemp) / 2.0)
+  {
+    _xyz = _temperature_to_XYZ(*TempK);
+    if(_xyz.Z / _xyz.X > XYZ.Z / XYZ.X)
+      maxtemp = *TempK;
+    else
+      mintemp = *TempK;
+  }
+
+  // TODO: Fix this to move orthogonally to planckian locus
+  *tint = (_xyz.Y / _xyz.X) / (XYZ.Y / XYZ.X);
+
+
+  if(*TempK < DT_IOP_LOWEST_TEMPERATURE) *TempK = DT_IOP_LOWEST_TEMPERATURE;
+  if(*TempK > DT_IOP_HIGHEST_TEMPERATURE) *TempK = DT_IOP_HIGHEST_TEMPERATURE;
+  if(*tint < 0.135) *tint = 0.135;
+  if(*tint > 2.326) *tint = 2.326;
+}
+
 gboolean np_white_balance(dt_develop_t *dev, double kelvin, double tint, char **err)
 {
   dt_iop_module_t *module = dt_iop_get_module_by_op_priority(dev->iop, "temperature", 0);
@@ -154,6 +180,23 @@ gboolean np_white_balance(dt_develop_t *dev, double kelvin, double tint, char **
   if(!dt_colorspaces_conversion_matrices_xyz(dev->image_storage.adobe_XYZ_to_CAM,
       dev->image_storage.d65_color_matrix, xyz_to_cam, cam_to_xyz))
   { *err = g_strdup("camera color matrix unavailable for white balance"); return FALSE; }
+  if(kelvin == 0)
+  {
+    double coefficients[4];
+    const char *names[] = { "red", "green", "blue", "various" };
+    for(int i = 0; i < 4; i++)
+    {
+      const float coefficient = *(float *)module->so->get_p(module->params, names[i]);
+      coefficients[i] = coefficient > 0 ? 1.0 / coefficient : 0;
+    }
+    double tristimulus[3] = { 0 };
+    for(int row = 0; row < 3; row++)
+      for(int col = 0; col < 4; col++) tristimulus[row] += cam_to_xyz[row][col] * coefficients[col];
+    float temperature, base_tint;
+    _XYZ_to_temperature((cmsCIEXYZ){ tristimulus[0], tristimulus[1], tristimulus[2] }, &temperature, &base_tint);
+    kelvin = temperature;
+    tint += 100.0 * log2(base_tint);
+  }
   cmsCIEXYZ xyz = _temperature_tint_to_XYZ(kelvin, pow(2.0, tint / 100.0));
   double white[3] = { xyz.X, xyz.Y, xyz.Z }, mul[4];
   for(int row = 0; row < 4; row++)
