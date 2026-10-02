@@ -45,8 +45,15 @@ final class AdvancedModuleEditor: ObservableObject {
     private var normalizedEdits: EditState?
     private var normalizedSourceEdits: EditState?
     private var normalizedContext: AdvancedModuleContext?
+    private let pinnedModuleID: UUID?
+    private var editingID: UUID?
+    private var previewTask: Task<Void, Never>?
+    private var previewTicket = UUID()
 
-    init(store: EditorStore) { self.store = store }
+    init(store: EditorStore, moduleID: UUID? = nil) {
+        self.store = store
+        pinnedModuleID = moduleID
+    }
 
     var operations: [AdvancedOperation] {
         let grouped = Dictionary(grouping: store.currentEdits.modules, by: \.operation)
@@ -70,7 +77,8 @@ final class AdvancedModuleEditor: ObservableObject {
 
     var canEdit: Bool {
         store.capabilities.supportsModuleEditing && originalModule != nil && schema != nil
-            && !isLoading && !isApplying && matchesContext && expectedEdits == store.currentEdits
+            && !isLoading && !isApplying && matchesContext
+            && (editingID != nil || expectedEdits == store.currentEdits)
     }
 
     var hasLoadedValues: Bool { originalModule != nil }
@@ -92,7 +100,12 @@ final class AdvancedModuleEditor: ObservableObject {
         } ?? []
     }
 
-    func activate() {
+    func activate(descriptors known: [ProcessingModule]? = nil) {
+        previewTask?.cancel()
+        previewTask = nil
+        previewTicket = UUID()
+        if let editingID { store.cancelCurrentModuleEditing(editingID) }
+        editingID = nil
         loadTask?.cancel()
         applyTask?.cancel()
         applyTicket = UUID()
@@ -105,6 +118,11 @@ final class AdvancedModuleEditor: ObservableObject {
         expectedAssetID = store.selectedAssetID
         expectedCatalogURL = store.catalogURL
         expectedCatalogID = store.catalogID
+        if let known {
+            descriptors = known
+            selectInitialOperation()
+            return
+        }
         loadTask = Task { [weak self] in
             guard let self else { return }
             do {
@@ -134,7 +152,15 @@ final class AdvancedModuleEditor: ObservableObject {
 
     func synchronize() {
         guard !isApplying else { return }
+        if editingID != nil {
+            if !matchesContext { cancel(); reloadSelection() }
+            return
+        }
         guard !matchesContext || expectedEdits != store.currentEdits else { return }
+        if matchesContext, hasLoadedValues, unchangedOwnModule {
+            expectedEdits = store.currentEdits
+            return
+        }
         let discarded = hasChanges
         if !operations.contains(where: { $0.operation == selectedOperation }) {
             selectInitialOperation()
@@ -157,6 +183,7 @@ final class AdvancedModuleEditor: ObservableObject {
             values[name] = value
         }
         statusMessage = nil
+        if editingID != nil { previewChanges() }
     }
 
     func setValidity(_ name: String, valid: Bool) {
@@ -226,6 +253,11 @@ final class AdvancedModuleEditor: ObservableObject {
     func cancel() {
         loadTask?.cancel()
         applyTask?.cancel()
+        previewTask?.cancel()
+        previewTask = nil
+        previewTicket = UUID()
+        if let editingID { store.cancelCurrentModuleEditing(editingID) }
+        editingID = nil
         applyTicket = UUID()
         isApplying = false
         loadTicket = UUID()
@@ -238,6 +270,8 @@ final class AdvancedModuleEditor: ObservableObject {
 
     func waitForApply() async { await applyTask?.value }
 
+    func waitForPreview() async { await previewTask?.value }
+
     private var matchesContext: Bool {
         expectedAssetID == store.selectedAssetID && expectedCatalogURL == store.catalogURL
             && expectedCatalogID == store.catalogID
@@ -246,11 +280,94 @@ final class AdvancedModuleEditor: ObservableObject {
     private var changedValues: [String: ModuleParameterValue] {
         values.filter { originalValues[$0.key] != $0.value }
     }
+
+    private var unchangedOwnModule: Bool {
+        guard let id = selectedModuleID else { return false }
+        let current = store.currentEdits
+        return expectedEdits.modules.first(where: { $0.id == id }) == current.modules.first(where: { $0.id == id })
+            && expectedEdits.exposureEV == current.exposureEV
+            && expectedEdits.temperature == current.temperature && expectedEdits.tint == current.tint
+            && expectedEdits.darktableXMP == current.darktableXMP
+    }
 }
 
 extension AdvancedModuleEditor {
 
+    func sliderEditingChanged(_ editing: Bool) {
+        if editing {
+            guard canEdit, let assetID = expectedAssetID, let catalogID = expectedCatalogID,
+                let module = originalModule else { return }
+            editingID = store.beginCurrentModuleEditing(assetID: assetID, catalogID: catalogID,
+                expectedEdits: expectedEdits, moduleID: module.id, label: historyLabel)
+        } else {
+            finishSliderEditing()
+        }
+    }
+
+    func setSliderValue(_ name: String, value: ModuleParameterValue) {
+        setValue(name, value: value)
+        if editingID == nil { apply() }
+    }
+
+    private var historyLabel: String {
+        let title = selectedDescriptor?.title ?? selectedOperation
+        return title.prefix(1).uppercased() + title.dropFirst()
+    }
+
+    private func previewChanges() {
+        guard let editingID, let module = originalModule else { return }
+        previewTicket = UUID()
+        guard previewTask == nil else { return }
+        previewTask = Task { [weak self] in
+            guard let self else { return }
+            defer { if self.editingID == editingID { previewTask = nil } }
+            do {
+                try await previewLoop(editingID: editingID, module: module)
+            } catch is CancellationError {} catch {
+                guard self.editingID == editingID else { return }
+                cancel()
+                reloadSelection()
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private func previewLoop(editingID: UUID, module: ModuleState) async throws {
+        while self.editingID == editingID {
+            let ticket = previewTicket
+            let accepted = try await store.previewCurrentModule(editingID: editingID,
+                module: module, values: changedValues)
+            try Task.checkCancellation()
+            guard self.editingID == editingID else { return }
+            if !accepted { cancel(); reloadSelection(); return }
+            await store.waitForRender()
+            try Task.checkCancellation()
+            if previewTicket == ticket { return }
+        }
+    }
+
+    private func finishSliderEditing() {
+        guard let editingID else { return }
+        let pending = previewTask
+        isApplying = true
+        applyTask = Task { [weak self] in
+            await pending?.value
+            guard let self, self.editingID == editingID else { return }
+            store.endCurrentModuleEditing(editingID)
+            self.editingID = nil
+            isApplying = false
+            reloadSelection()
+        }
+    }
+
     private func selectInitialOperation() {
+        if let pinnedModuleID {
+            let module = store.currentEdits.modules.first { $0.id == pinnedModuleID }
+            selectedOperation = module?.operation ?? ""
+            selectedModuleID = module?.id
+            reloadSelection()
+            return
+        }
         let retained = operations.filter { $0.instanceCount > 0 }
         let operation =
             retained.first { $0.operation == selectedOperation }

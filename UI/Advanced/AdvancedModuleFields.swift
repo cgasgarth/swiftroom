@@ -6,6 +6,9 @@ struct AdvancedModuleFields: View {
     let values: [String: ModuleParameterValue]
     var onSet: (String, ModuleParameterValue) -> Void
     var onValidity: (String, Bool) -> Void
+    var onCommit: () -> Void = {}
+    var onEditingChanged: (Bool) -> Void = { _ in }
+    var onSliderSet: ((String, ModuleParameterValue) -> Void)?
 
     private var presentation: AdvancedFieldPresentation {
         AdvancedFieldPresentation(schema: schema, values: values)
@@ -34,13 +37,15 @@ struct AdvancedModuleFields: View {
         if field.isNumeric, value.doubleValue != nil {
             AdvancedNumericField(
                 field: field, value: value, unit: presentation.unit(for: field), title: presentation.title(for: field),
-                onSet: { onSet(field.name, $0) }, onValidity: { onValidity(field.name, $0) })
+                onSet: { onSet(field.name, $0) }, onValidity: { onValidity(field.name, $0) },
+                onCommit: onCommit, onEditingChanged: onEditingChanged,
+                onSliderSet: onSliderSet.map { callback in { callback(field.name, $0) } })
         } else if field.kind == .bool, case .boolean(let enabled) = value {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text(presentation.title(for: field)).frame(maxWidth: .infinity, alignment: .leading)
                 Toggle(
                     "",
-                    isOn: Binding(get: { enabled }, set: { onSet(field.name, .boolean($0)) })
+                    isOn: Binding(get: { enabled }, set: { onSet(field.name, .boolean($0)); onCommit() })
                 )
                 .toggleStyle(.checkbox).labelsHidden().frame(width: 88, alignment: .trailing)
                 .accessibilityLabel(field.displayTitle)
@@ -57,7 +62,7 @@ struct AdvancedModuleFields: View {
                     selection: Binding(
                         get: { field.choiceValue(for: value) },
                         set: { selection in
-                            if let selection { onSet(field.name, .integer(selection)) }
+                            if let selection { onSet(field.name, .integer(selection)); onCommit() }
                         })
                 ) {
                     if field.choiceValue(for: value) == nil {
@@ -84,6 +89,7 @@ struct AdvancedModuleFields: View {
         Button {
             if let defaultValue = field.defaultValue, field.accepts(defaultValue) {
                 onSet(field.name, defaultValue)
+                onCommit()
             }
         } label: {
             Image(systemName: "arrow.counterclockwise")

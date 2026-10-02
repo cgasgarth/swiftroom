@@ -8,6 +8,9 @@ struct AdvancedNumericField: View {
     var title: String?
     var onSet: (ModuleParameterValue) -> Void
     var onValidity: (Bool) -> Void
+    var onCommit: () -> Void = {}
+    var onEditingChanged: (Bool) -> Void = { _ in }
+    var onSliderSet: ((ModuleParameterValue) -> Void)?
     @State private var draft = ""
     @State private var validationMessage: String?
     @State private var didEdit = false
@@ -71,9 +74,9 @@ struct AdvancedNumericField: View {
         let binding = Binding(get: { value.doubleValue ?? range.lowerBound }, set: updateSlider)
         return Group {
             if field.isInteger, range.upperBound - range.lowerBound <= 20 {
-                Slider(value: binding, in: range, step: 1)
+                Slider(value: binding, in: range, step: 1, onEditingChanged: onEditingChanged)
             } else {
-                Slider(value: binding, in: range)
+                Slider(value: binding, in: range, onEditingChanged: onEditingChanged)
             }
         }
         .accessibilityLabel(field.displayTitle)
@@ -90,6 +93,7 @@ struct AdvancedNumericField: View {
             validationMessage = nil
             onValidity(true)
             onSet(defaultValue)
+            onCommit()
         } label: {
             Image(systemName: "arrow.counterclockwise")
         }
@@ -113,7 +117,7 @@ struct AdvancedNumericField: View {
         draft = presentation.text(for: updated)
         validationMessage = nil
         onValidity(true)
-        onSet(updated)
+        (onSliderSet ?? onSet)(updated)
     }
 
     private func validateDraft() {
@@ -123,7 +127,6 @@ struct AdvancedNumericField: View {
             valid
             ? nil : "Use a valid \(field.isInteger ? "integer" : "number with at most two decimal places")."
         onValidity(valid)
-        if let parsed { onSet(parsed) }
     }
 
     private func commit() {
@@ -140,6 +143,7 @@ struct AdvancedNumericField: View {
         draft = presentation.text(for: updated)
         validationMessage = nil
         onValidity(true)
+        onCommit()
     }
 
     private func discard() {

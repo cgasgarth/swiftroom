@@ -48,6 +48,7 @@
             try await persistence(editor: editor, store: store, baselineDigest: baselineDigest)
             try await basicFolding(editor: editor, store: store)
             try await exposureModes(editor: editor, store: store)
+            try await liveGestures(editor: editor, store: store)
             try await options(editor: editor, store: store, engine: engine)
             try await integerEntry(editor: editor, store: store)
             try await switching(editor: editor, store: store, fixture: fixture, firstID: document.id)
@@ -400,6 +401,109 @@
                 throw AdvancedWorkflowFailure(message: "Cannot decode real developed pixels.")
             }
             return SHA256.hash(data: data as Data).map { String(format: "%02x", $0) }.joined()
+        }
+    }
+    extension AdvancedModuleWorkflow {
+        @MainActor
+        private static func liveGestures(editor: AdvancedModuleEditor, store: EditorStore) async throws {
+            editor.synchronize()
+            await editor.waitForLoad()
+            let observer = try await pinnedObserver(store)
+            let observerRevision = observer.editorRevision
+            let before = store.currentEdits
+            let historyCount = store.history.count
+            let historyIndex = store.selectedDocument?.historyIndex ?? -1
+            guard let frame = store.preview else {
+                throw AdvancedWorkflowFailure(message: "Missing preview before live gesture.")
+            }
+            let beforePixels = try pixels(frame.imageURL)
+            editor.sliderEditingChanged(true)
+            editor.setSliderValue("exposure", value: .number(1.12))
+            let firstPixels = try await livePreview(editor: editor, store: store, exposure: 1.12)
+            observer.synchronize()
+            try require(observer.canEdit && observer.editorRevision == observerRevision,
+                "Another adjustment group reloaded during an unrelated live preview.")
+            try require(firstPixels != beforePixels, "Dragging did not develop a live RAW preview.")
+            try require(store.history.count == historyCount, "Live preview created premature history.")
+            editor.setSliderValue("exposure", value: .number(1.21))
+            await Task.yield()
+            editor.setSliderValue("exposure", value: .number(1.25))
+            editor.setSliderValue("exposure", value: .number(1.34))
+            let finalPixels = try await livePreview(editor: editor, store: store, exposure: 1.34)
+            try require(firstPixels != finalPixels, "The second drag value left live pixels unchanged.")
+            try require(store.history.count == historyCount, "Each drag value created an undo entry.")
+            editor.sliderEditingChanged(false)
+            await editor.waitForApply()
+            await editor.waitForLoad()
+            try require(store.selectedDocument?.historyIndex == historyIndex + 1
+                && store.history.count == historyIndex + 2, "Gesture end did not create exactly one history entry.")
+            store.undo()
+            await store.waitForRender()
+            try require(store.currentEdits == before, "Gesture Undo did not restore full baseline edits.")
+            try require(try previewPixels(store) == beforePixels, "Gesture Undo pixels changed.")
+            store.redo()
+            await store.waitForRender()
+            try require(try previewPixels(store) == finalPixels, "Gesture Redo pixels changed.")
+            try await cancelledGesture(editor: editor, store: store)
+            print("PASS live RAW previews during dragging, one gesture history entry and exact Undo/Redo")
+        }
+
+        @MainActor
+        private static func livePreview(
+            editor: AdvancedModuleEditor, store: EditorStore, exposure: Double
+        ) async throws -> String {
+            await editor.waitForPreview()
+            await store.waitForRender()
+            guard let module = store.currentEdits.modules.first(where: { $0.id == editor.selectedModuleID }),
+                let frame = store.preview else {
+                throw AdvancedWorkflowFailure(message: "Live module preview was not accepted.")
+            }
+            let decoded = try await store.engine.parameters(for: module)
+            try require(abs((decoded["exposure"]?.doubleValue ?? .infinity) - exposure) < 0.000_001,
+                "The live module bytes did not contain the latest drag value.")
+            return try pixels(frame.imageURL)
+        }
+
+        @MainActor
+        private static func previewPixels(_ store: EditorStore) throws -> String {
+            guard let frame = store.preview else {
+                throw AdvancedWorkflowFailure(message: "Missing developed preview.")
+            }
+            return try pixels(frame.imageURL)
+        }
+
+        @MainActor
+        private static func pinnedObserver(_ store: EditorStore) async throws -> AdvancedModuleEditor {
+            guard let module = store.currentEdits.modules.first(where: { $0.operation == "rawprepare" }) else {
+                throw AdvancedWorkflowFailure(message: "Real RAW preparation module unavailable.")
+            }
+            let observer = AdvancedModuleEditor(store: store, moduleID: module.id)
+            observer.activate()
+            await observer.waitForLoad()
+            try require(observer.selectedModuleID == module.id && observer.canEdit,
+                "Pinned adjustment group did not load the actual module instance.")
+            return observer
+        }
+
+        @MainActor
+        private static func cancelledGesture(editor: AdvancedModuleEditor, store: EditorStore) async throws {
+            editor.synchronize()
+            await editor.waitForLoad()
+            let baseline = store.currentEdits
+            let count = store.history.count
+            editor.sliderEditingChanged(true)
+            editor.setSliderValue("exposure", value: .number(1.75))
+            _ = try await livePreview(editor: editor, store: store, exposure: 1.75)
+            editor.cancel()
+            await store.waitForRender()
+            try require(store.currentEdits == baseline && store.history.count == count,
+                "Cancelled live gesture changed the baseline or added history.")
+            editor.activate()
+            await editor.waitForLoad()
+            editor.setSliderValue("exposure", value: .number(1.34))
+            await editor.waitForApply()
+            await editor.waitForLoad()
+            try require(store.history.count == count, "No-op slider keyboard edit created history.")
         }
     }
 #endif
