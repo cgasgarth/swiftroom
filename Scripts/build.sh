@@ -18,7 +18,8 @@ while IFS= read -r path; do SOURCES+=("$path"); done < <(find "$ROOT/App" "$ROOT
 if test "$LIBRARY_ROOT" != "$ROOT/Core/Library"; then
     while IFS= read -r path; do SOURCES+=("$path"); done < <(find "$LIBRARY_ROOT" -name '*.swift' -type f | sort)
 fi
-for extra in "${NATIVE_PHOTO_ADVANCED_SOURCE:-}" "${NATIVE_PHOTO_EXPORT_SOURCE:-}" "${NATIVE_PHOTO_LIBRARY_UI_SOURCE:-}"; do
+for extra in "${NATIVE_PHOTO_ADVANCED_SOURCE:-}" "${NATIVE_PHOTO_EXPORT_SOURCE:-}" \
+    "${NATIVE_PHOTO_LIBRARY_UI_SOURCE:-}" "${NATIVE_PHOTO_MASKS_UI_SOURCE:-}"; do
     if test -n "$extra"; then
         while IFS= read -r path; do SOURCES+=("$path"); done < <(find "$extra" -name '*.swift' -type f | sort)
     fi
