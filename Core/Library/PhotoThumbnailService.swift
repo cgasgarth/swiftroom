@@ -1,7 +1,7 @@
 import Combine
 import Foundation
 
-struct PhotoThumbnailRevision: Equatable {
+struct PhotoThumbnailRevision: Equatable, Sendable {
     var catalogID: UUID
     var catalogURL: URL
     var assetID: UUID
@@ -14,6 +14,7 @@ final class PhotoThumbnailService: ObservableObject {
     @Published private(set) var urls: [UUID: URL] = [:]
     @Published private(set) var errors: [UUID: String] = [:]
     @Published private(set) var generation: UInt64 = 0
+    @Published private(set) var isRendering = false
     private weak var store: EditorStore?
     private let engine: any PhotoEngine
     private let frameLimit: Int
@@ -201,12 +202,13 @@ extension PhotoThumbnailService {
 
     private func render(_ snapshot: Snapshot, expectedGeneration: UInt64) async {
         active = snapshot
+        isRendering = true
         sequence &+= 1
         let request = RenderRequest(assetID: snapshot.assetID, generation: sequence,
             sourceURL: snapshot.sourceURL, edits: snapshot.edits, maximumDimension: 240)
         let render = Task { [engine] in try await engine.render(request) }
         activeRender = render
-        defer { active = nil; activeRender = nil }
+        defer { active = nil; activeRender = nil; isRendering = false }
         do {
             let photo = try await render.value
             guard !Task.isCancelled, !render.isCancelled, generation == expectedGeneration,
