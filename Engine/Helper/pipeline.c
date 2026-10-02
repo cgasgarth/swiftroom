@@ -98,7 +98,16 @@ static gboolean apply_modules(dt_develop_t *dev, JsonArray *entries, char **err)
       }
     }
     module->enabled = json_object_get_boolean_member(entry, "enabled");
+    const gboolean preserve_name = json_object_has_member(entry, "name");
+    const gboolean hand_edited = module->multi_name_hand_edited;
+    if(preserve_name) module->multi_name_hand_edited = TRUE;
     dt_dev_add_history_item_ext(dev, module, module->enabled, TRUE);
+    if(preserve_name)
+    {
+      module->multi_name_hand_edited = hand_edited;
+      dt_dev_history_item_t *item = g_list_nth_data(dev->history, dev->history_end - 1);
+      if(item && item->module == module) item->multi_name_hand_edited = hand_edited;
+    }
   }
   return TRUE;
 }

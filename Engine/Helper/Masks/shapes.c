@@ -65,14 +65,14 @@ static gboolean group(dt_masks_form_t *form, JsonArray *members, char **err)
         || !np_mask_number(member, "opacity", 0, 1, &opacity, err)
         || !np_mask_number(member, "operation", 8, 128, &operation, err)
         || (operation != 8 && operation != 16 && operation != 32 && operation != 64 && operation != 128)
-        || !np_mask_number(member, "preservedFlags", 0, INT32_MAX, &preserved, err)
-        || floor(preserved) != preserved || ((int)preserved & 255))
+        || !np_mask_number(member, "preservedFlags", 0, UINT32_MAX, &preserved, err)
+        || floor(preserved) != preserved || ((uint32_t)preserved & 255))
       return np_mask_fail(err, "mask group member fields are invalid");
     dt_masks_point_group_t *point = calloc(1, sizeof(*point));
     point->formid = id;
     point->parentid = form->formid;
     point->opacity = opacity;
-    point->state = (int)operation | (int)preserved;
+    point->state = (uint32_t)operation | (uint32_t)preserved;
     if(json_object_get_boolean_member(member, "inverted")) point->state |= DT_MASKS_STATE_INVERSE;
     if(json_object_get_boolean_member(member, "enabled")) point->state |= DT_MASKS_STATE_USE;
     if(json_object_get_boolean_member(member, "visible")) point->state |= DT_MASKS_STATE_SHOW;

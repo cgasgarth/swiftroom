@@ -14,8 +14,18 @@ static gboolean supported(const dt_masks_form_t *form)
     }
     return TRUE;
   }
-  return g_list_length(form->points) == 1 && (form->type == DT_MASKS_CIRCLE
-    || form->type == DT_MASKS_ELLIPSE || form->type == DT_MASKS_GRADIENT);
+  if(g_list_length(form->points) != 1) return FALSE;
+  if(form->type == DT_MASKS_ELLIPSE)
+  {
+    const dt_masks_point_ellipse_t *point = form->points->data;
+    return point->flags == DT_MASKS_ELLIPSE_EQUIDISTANT || point->flags == DT_MASKS_ELLIPSE_PROPORTIONAL;
+  }
+  if(form->type == DT_MASKS_GRADIENT)
+  {
+    const dt_masks_point_gradient_t *point = form->points->data;
+    return point->state == DT_MASKS_GRADIENT_STATE_LINEAR || point->state == DT_MASKS_GRADIENT_STATE_SIGMOIDAL;
+  }
+  return form->type == DT_MASKS_CIRCLE;
 }
 
 static void geometry(JsonBuilder *builder, const dt_masks_form_t *form)

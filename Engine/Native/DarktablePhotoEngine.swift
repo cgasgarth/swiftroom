@@ -32,7 +32,9 @@ actor DarktablePhotoEngine: PhotoEngine {
             supportsModuleEditing: runtime != nil, supportsFullResolutionExport: runtime != nil,
             limitations: [
                 "Scalar parameters are editable; curves and compound arrays remain preserved in opaque blobs.",
-                "Native drawn-mask and blending controls remain incomplete.",
+                "Numeric circle, ellipse, gradient and ordered-group masks are editable; canvas mapping is unverified.",
+                "Seeded modes, opacity and drawn assignment are editable; " +
+                    "parametric and raster editors are unavailable.",
                 "CPU processing; OpenCL acceleration remains disabled during validation.",
                 "White balance uses the camera matrix and darktable's temperature spectral conversion."
             ], supportedExportFormats: runtime == nil ? [] : [.jpeg, .png, .tiff],
