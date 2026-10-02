@@ -18,7 +18,7 @@ struct MaskIntegration {
         input.darktableXMP = try Data(contentsOf: fixture)
         let prepared = try await engine.prepare(sourceURL: source, edits: input)
         let initial = try await editor.maskState(sourceURL: source, edits: prepared.edits)
-        guard initial.forms.count == 3,
+        guard initial.forms.count == 4,
               let opaque = initial.forms.first(where: { $0.id == 81999 }), opaque.geometry == nil,
               !opaque.pointData.isEmpty,
               let module = prepared.edits.modules.first(where: { $0.operation == "exposure" && $0.instance == 1 })
@@ -33,9 +33,8 @@ struct MaskIntegration {
             )])
         )
         let createdState = try await editor.maskState(sourceURL: source, edits: created.edits)
-        try assert(createdState.forms.count == 7, "all native shapes were not created")
         try preserved(original: prepared.edits, updated: created.edits, blendModule: module.id)
-        try assert(createdState.forms.first(where: { $0.id == opaque.id }) == opaque, "opaque mask changed")
+        try preservedForms(original: initial, updated: createdState)
         let createdPixels = try await pixels(engine, source: source, edits: created.edits)
         try assert(createdPixels != baselinePixels,
                    "mask assignment did not change decoded pixels")
@@ -55,6 +54,14 @@ struct MaskIntegration {
                          changed: changed, originalHash: originalHash)
         print("Elapsed \(Date().timeIntervalSince(started)) seconds.")
         print("Masks integration passed: numeric shapes, groups, seeded blend, opaque preservation and XMP reopen.")
+    }
+
+    static func preservedForms(original: MaskState, updated: MaskState) throws {
+        try assert(updated.forms.count == original.forms.count + definitions.count, "native shapes were not created")
+        for form in original.forms {
+            try assert(updated.forms.first(where: { $0.id == form.id }) == form,
+                       "existing mask \(form.id) payload changed")
+        }
     }
 
     static func patchBlend(
@@ -93,7 +100,7 @@ struct MaskIntegration {
             )
         )
         let deletedState = try await editor.maskState(sourceURL: source, edits: deleted.edits)
-        try assert(deletedState.forms.count == 3, "native mask deletion did not persist")
+        try assert(deletedState.forms.count == 4, "native mask deletion did not persist")
         try assert(deletedState.forms.first(where: { $0.id == opaque.id }) == opaque, "delete lost unsupported mask")
         try preserved(original: original.edits, updated: deleted.edits, blendModule: module.id)
         try assert(try hash(source) == originalHash, "copied RAW was modified")
@@ -102,6 +109,7 @@ struct MaskIntegration {
         let evidence: [String: Any] = [
             "shapes": ["circle", "ellipse", "gradient", "ordered group"], "createUpdateDelete": true,
             "blendAssignment": true, "blendOpaqueBytesPreserved": true, "unsupportedClonePathPreserved": true,
+            "unknownEllipseFlagsPreserved": true,
             "savedXMPReopenPixelExact": true, "invalidEditsRejected": failures, "rawSHA256": originalHash,
             "unrelatedModulesAndOrderPreserved": true, "requestCleanup": true,
             "coordinateSpace": "normalized input; canvas mapping unavailable"

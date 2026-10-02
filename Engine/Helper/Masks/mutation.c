@@ -30,8 +30,7 @@ static gboolean change(dt_develop_t *dev, JsonObject *mutation, char **err)
     g_strlcpy(old->name, name, sizeof(old->name));
     return TRUE;
   }
-  if(old && (old->version != dt_masks_version() || (old->type != DT_MASKS_CIRCLE
-      && old->type != DT_MASKS_ELLIPSE && old->type != DT_MASKS_GRADIENT && old->type != DT_MASKS_GROUP)))
+  if(old && !np_mask_form_editable(old))
     return np_mask_fail(err, "unsupported mask geometry remains read-only");
   dt_masks_form_t *form = np_mask_geometry(geometry, id, err);
   if(!form) return FALSE;

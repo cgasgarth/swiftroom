@@ -39,6 +39,17 @@ int main(int argc, char **argv)
     path->points = g_list_append(path->points, point);
   }
   dev.forms = g_list_append(dev.forms, path);
+  dt_masks_form_t *future = dt_masks_create(DT_MASKS_ELLIPSE);
+  future->formid = 81998;
+  g_strlcpy(future->name, "Preserved unknown ellipse flags", sizeof(future->name));
+  dt_masks_point_ellipse_t *ellipse = calloc(1, sizeof(*ellipse));
+  ellipse->center[0] = ellipse->center[1] = 0.5f;
+  ellipse->radius[0] = 0.2f;
+  ellipse->radius[1] = 0.1f;
+  ellipse->border = 0.04f;
+  ellipse->flags = 2;
+  future->points = g_list_append(future->points, ellipse);
+  dev.forms = g_list_append(dev.forms, future);
   dt_iop_module_t *module = dt_iop_get_module_by_op_priority(dev.iop, "exposure", 1);
   if(!module || !module->blend_params) return 5;
   module->blend_params->reserved[0] = 0xdecafbad;

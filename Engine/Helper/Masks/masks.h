@@ -6,6 +6,7 @@
 
 gboolean np_masks_apply(dt_develop_t *dev, JsonObject *edit, char **err);
 void np_masks_state(JsonBuilder *builder, dt_develop_t *dev);
+gboolean np_mask_form_editable(const dt_masks_form_t *form);
 dt_masks_form_t *np_mask_geometry(JsonObject *geometry, dt_mask_id_t id, char **err);
 gboolean np_blend_patch(dt_develop_t *dev, JsonObject *entry, char **err);
 

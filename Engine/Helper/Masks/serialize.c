@@ -1,6 +1,6 @@
 #include "masks.h"
 
-static gboolean supported(const dt_masks_form_t *form)
+gboolean np_mask_form_editable(const dt_masks_form_t *form)
 {
   if(form->version != dt_masks_version()) return FALSE;
   if(form->type == DT_MASKS_GROUP)
@@ -31,7 +31,7 @@ static gboolean supported(const dt_masks_form_t *form)
 static void geometry(JsonBuilder *builder, const dt_masks_form_t *form)
 {
   json_builder_set_member_name(builder, "geometry");
-  if(!supported(form)) { json_builder_add_null_value(builder); return; }
+  if(!np_mask_form_editable(form)) { json_builder_add_null_value(builder); return; }
   json_builder_begin_object(builder);
   const char *kind = form->type == DT_MASKS_CIRCLE ? "circle" : form->type == DT_MASKS_ELLIPSE
     ? "ellipse" : form->type == DT_MASKS_GRADIENT ? "gradient" : "group";
