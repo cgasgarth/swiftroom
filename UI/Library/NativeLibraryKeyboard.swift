@@ -3,12 +3,23 @@ import SwiftUI
 @MainActor
 struct NativeLibraryKeyboard: ViewModifier {
     @ObservedObject var model: LibraryController
+    @FocusState private var isFocused: Bool
 
     func body(content: Content) -> some View {
-        content.onKeyPress(phases: .down, action: handle)
+        content
+            .focusable(interactions: .edit)
+            .focused($isFocused)
+            .simultaneousGesture(TapGesture().onEnded { isFocused = true })
+            .onKeyPress(phases: [.down, .repeat], action: handle)
     }
 
     private func handle(_ press: KeyPress) -> KeyPress.Result {
+        if press.modifiers.isSubset(of: .shift),
+           press.key == .upArrow || press.key == .downArrow {
+            model.moveSelection(press.key == .upArrow ? -1 : 1, extending: press.modifiers == .shift)
+            return .handled
+        }
+        guard press.phase == .down else { return .ignored }
         if press.key == .escape { model.clearSelection(); return .handled }
         if press.modifiers == .command, press.characters.lowercased() == "a" {
             model.selectAll(); return .handled
