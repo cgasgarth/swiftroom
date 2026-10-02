@@ -1,7 +1,7 @@
-# Native Photo
+# swiftroom
 
 Use GPT-6.1 Sol and NORMAL service tier. No additional threads without parent coordination.
-Standalone private repository; never use GitHub Fork. Parent owns PR review and merges.
+Standalone public repository cgasgarth/swiftroom; never use GitHub Fork. Parent owns PR review and merges.
 Never edit original darktable/RapidRAW projects, installed apps, catalogs, or photo libraries.
 Import copies into a separate catalog. Never write XMP beside source originals.
 No private photos, RAW fixtures, catalogs, builds, screenshots or artifacts in GitHub.
@@ -17,7 +17,7 @@ No paid services, unrecognized installs, security changes or silent Xcode licens
 - Core/EngineContract.swift is the typed engine authority. All app Swift files share NativePhoto module.
 - NativePhotoEngineFactory.make(cacheDirectory:) supplies any PhotoEngine.
 - Core/EditorStore.swift is @MainActor ObservableObject, supplying catalog state/actions to UI.
-- Build: ./Scripts/build.sh produces build/Native Photo.app. Test: ./Scripts/test.sh.
+- Build: ./Scripts/build.sh produces build/swiftroom.app. Test: ./Scripts/test.sh.
 - Native SwiftUI/AppKit shell with MetalKit color-managed display. No web UI or canned preview.
 - Keep darktable C/C++ processing initially; Metal display is separate from Metal compute.
 - Engine outputs real ICC-tagged images. Unsupported capabilities must be reported explicitly.
