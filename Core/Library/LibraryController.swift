@@ -34,9 +34,10 @@ final class LibraryController: ObservableObject {
     func synchronize() {
         if catalogURL != store.catalogURL {
             catalogURL = store.catalogURL
-            selectedIDs = []
+            selectedIDs = store.selectedAssetID.map { [$0] } ?? []
+            lastFocusedID = store.selectedAssetID
+            rangeAnchorID = store.selectedAssetID
             query = LibraryQuery()
-            rangeAnchorID = nil
         }
         if case .collection(let id) = query.scope, !store.library.collections.contains(where: { $0.id == id }) {
             query.scope = .all

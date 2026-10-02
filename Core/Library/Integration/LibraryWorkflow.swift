@@ -23,7 +23,7 @@ enum LibraryWorkflow {
             }
             let engine = NativePhotoEngineFactory.make(cacheDirectory: catalogURL.appendingPathComponent("Cache"))
             let store = try EditorStore(engine: engine, catalogURL: catalogURL)
-            await store.importURLs(sources)
+            try await verifyImportIsolation(store: store, sources: sources, root: root)
             await store.waitForRender()
             try require(store.documents.count == 3, "Real RAW import failed: \(store.errorMessage ?? "unknown error")")
             try require(store.preview != nil, "Real engine did not develop the imported RAW.")
@@ -49,6 +49,27 @@ enum LibraryWorkflow {
             FileHandle.standardError.write(Data("LIBRARY INTEGRATION FAIL: \(error)\n".utf8))
             exit(1)
         }
+    }
+
+    @MainActor
+    private static func verifyImportIsolation(store: EditorStore, sources: [URL], root: URL) async throws {
+        let originalCatalogURL = store.catalogURL
+        let importing = Task { await store.importURLs(sources) }
+        await Task.yield()
+        let observedImport = store.isImporting
+        var switchWasBlocked = false
+        if observedImport {
+            do {
+                try store.openCatalog(at: root.appendingPathComponent("DuringImport"))
+            } catch {
+                switchWasBlocked = true
+            }
+        }
+        await importing.value
+        try require(observedImport, "The test did not observe asynchronous import.")
+        try require(switchWasBlocked, "Direct catalog switching was allowed while RAW copies were importing.")
+        try require(store.catalogURL == originalCatalogURL, "Import crossed catalog repositories.")
+        print("PASS direct catalog-switch guard during real asynchronous RAW import")
     }
 
     @MainActor
@@ -196,6 +217,8 @@ enum LibraryWorkflow {
         model.query.search = "alpha"
         model.select([store.documents[0].id])
         model.toggleFavorites()
+        model.query.search = ""
+        model.select([store.documents[1].id])
         try store.openCatalog(at: alternateURL)
         model.synchronize()
         try require(model.visibleDocuments.isEmpty && model.selectedIDs.isEmpty,
@@ -205,6 +228,9 @@ enum LibraryWorkflow {
         model.synchronize()
         try require(store.documents.count == 3 && store.library != reopened.library,
             "Opening another catalog lost the unsaved library mutation.")
+        let disk = try CatalogRepository(rootURL: reopened.catalogURL).load()
+        try require(store.selectedAssetID == disk.selectedAssetID,
+            "Library synchronization replaced the persisted active photo.")
         await store.waitForRender()
         print("PASS atomic save/reopen, flags/collections/history, adjustment undo and unsaved catalog switching")
     }
