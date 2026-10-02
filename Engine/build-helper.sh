@@ -4,6 +4,10 @@ ENGINE="$(cd "$(dirname "$0")" && pwd)"
 "$ENGINE/fetch-source.sh"
 SOURCE="$ENGINE/Upstream/darktable-5.6.0/src"
 BUNDLE="${NATIVE_PHOTO_DARKTABLE_BUNDLE:-/Applications/darktable.app}/Contents/Resources"
+if [[ "$(/usr/bin/shasum -a 256 "$BUNDLE/lib/darktable/libdarktable.dylib" | /usr/bin/cut -d " " -f 1)" != "922a2d075e8c59d0e9d7f27e73e80cab1a39f3bf64a5ba470ce19b86945fa8db" ]]; then
+  printf "%s\n" "Unverified darktable runtime; expected pinned 5.6.0 library." >&2
+  exit 1
+fi
 BUILD="$ENGINE/Build"
 mkdir -p "$BUILD/MacOS" "$BUILD/Resources/lib" "$BUILD/include"
 ln -sfn /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks/OpenCL.framework/Headers "$BUILD/include/CL"

@@ -88,6 +88,8 @@ static gboolean apply_modules(dt_develop_t *dev, JsonArray *entries, char **err)
     if(json_object_has_member(entry, "name"))
     {
       const char *name = json_object_get_string_member(entry, "name");
+      if(strlen(name) >= sizeof(module->multi_name))
+      { *err = g_strdup("module instance label exceeds 127 UTF-8 bytes"); return FALSE; }
       if(strcmp(name, module->multi_name))
       {
         g_strlcpy(module->multi_name, name, sizeof(module->multi_name));
@@ -130,12 +132,21 @@ static gboolean apply_adjustments(dt_develop_t *dev, JsonObject *edits, char **e
   return TRUE;
 }
 
-static char *response(dt_develop_t *dev, const char *xmp, int width, int height)
+static char *response(dt_develop_t *dev, const char *xmp, int width, int height, cmsHPROFILE profile)
 {
   JsonBuilder *builder = json_builder_new();
   json_builder_begin_object(builder);
   integer(builder, "pixelWidth", width);
   integer(builder, "pixelHeight", height);
+  if(profile)
+  {
+    cmsUInt32Number length = 0;
+    cmsSaveProfileToMem(profile, NULL, &length);
+    void *data = g_malloc(length);
+    cmsSaveProfileToMem(profile, data, &length);
+    blob(builder, "outputICC", data, length);
+    g_free(data);
+  }
   json_builder_set_member_name(builder, "metadata");
   json_builder_begin_object(builder);
   integer(builder, "pixelWidth", dev->image_storage.width);
@@ -205,6 +216,7 @@ char *np_pipeline(JsonObject *request, gboolean prepare, char **err)
   if(edits && !apply_adjustments(&dev, edits, err)) { dt_dev_cleanup(&dev); return NULL; }
   dt_dev_write_history_ext(&dev, imgid);
   int width = dev.image_storage.width, height = dev.image_storage.height;
+  cmsHPROFILE output_profile = NULL;
   if(!prepare)
   {
     const char *format_name = json_object_get_string_member(request, "format");
@@ -220,6 +232,7 @@ char *np_pipeline(JsonObject *request, gboolean prepare, char **err)
     const char *profile = json_object_get_string_member(request, "colorSpace");
     const dt_colorspaces_color_profile_type_t type = !strcmp(profile, "displayP3")
       ? DT_COLORSPACE_DISPLAY_P3 : !strcmp(profile, "adobeRGB") ? DT_COLORSPACE_ADOBERGB : DT_COLORSPACE_SRGB;
+    output_profile = dt_colorspaces_get_output_profile(imgid, type, NULL)->profile;
     const gboolean failed = dt_imageio_export_with_flags(imgid,
       json_object_get_string_member(request, "destination"), format, data,
       FALSE, FALSE, TRUE, FALSE, FALSE, 1.0, FALSE, NULL, TRUE, FALSE,
@@ -231,7 +244,7 @@ char *np_pipeline(JsonObject *request, gboolean prepare, char **err)
   }
   char *xmp = dt_exif_xmp_read_string(imgid);
   if(!xmp) { *err = g_strdup("XMP serialization failed"); dt_dev_cleanup(&dev); return NULL; }
-  char *json = response(&dev, xmp, width, height);
+  char *json = response(&dev, xmp, width, height, output_profile);
   g_free(xmp);
   dt_dev_cleanup(&dev);
   return json;

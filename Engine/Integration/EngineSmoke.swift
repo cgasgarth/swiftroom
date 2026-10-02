@@ -11,6 +11,7 @@ struct EngineSmoke {
         let originalHash = try SHA256.hash(data: Data(contentsOf: fixture)).description
         let engine = NativePhotoEngineFactory.make(cacheDirectory: root)
         let prepared = try await engine.prepare(sourceURL: fixture, edits: .original)
+        try await checkDescriptions(engine)
         guard prepared.edits.modules.count >= 90, prepared.edits.darktableXMP != nil else {
             throw PhotoEngineError.processing("missing actual module/XMP state")
         }
@@ -34,6 +35,8 @@ struct EngineSmoke {
         }
         let exports = try await exportProfiles(engine: engine, fixture: fixture, root: root, edits: prepared.edits)
         try await checkCancellation(engine: engine, fixture: fixture, edits: prepared.edits)
+        let retained = try await preserveAndRelease(engine, photos: [baseline, exposure, whiteBalance], root: root)
+        try await checkCleanup(engine, root: root)
         guard try SHA256.hash(data: Data(contentsOf: fixture)).description == originalHash,
               !FileManager.default.fileExists(atPath: fixture.path + ".xmp") else {
             throw PhotoEngineError.processing("fixture changed")
@@ -41,19 +44,31 @@ struct EngineSmoke {
         let evidence: [String: Any] = [
             "engine": engine.capabilities.revision, "moduleStates": prepared.edits.modules.count,
             "dimensions": [baseline.pixelWidth, baseline.pixelHeight],
-            "baseline": baseline.imageURL.path, "exposure": exposure.imageURL.path,
-            "whiteBalance": whiteBalance.imageURL.path, "exports": exports,
-            "cancellation": "passed", "sourcePreserved": true
+            "baseline": retained[0].path, "exposure": retained[1].path,
+            "whiteBalance": retained[2].path, "exports": exports,
+            "cancellation": "passed", "sourcePreserved": true, "scratchCleanup": true,
+            "previewRelease": true, "wrongICCRejected": true, "incompatibleRuntimeRejected": true
         ]
         try JSONSerialization.data(withJSONObject: evidence, options: [.prettyPrinted, .sortedKeys])
             .write(to: root.appendingPathComponent("smoke.json"), options: .atomic)
         print("Engine integration passed: RAW prepare, XMP/modules, decoded exposure/WB, ICC exports, cancellation.")
     }
 
+    private static func checkDescriptions(_ engine: any PhotoEngine) async throws {
+        let schema = try await engine.schema(for: "exposure")
+        guard let mode = schema.fields.first(where: { $0.name == "mode" }),
+              schema.fields.contains(where: { $0.title == "black level correction" }),
+              mode.choices.contains(where: { $0.title == "manual" }) else {
+            throw PhotoEngineError.processing("actual introspection descriptions missing")
+        }
+    }
+
     private static func exportProfiles(
         engine: any PhotoEngine, fixture: URL, root: URL, edits: EditState
     ) async throws -> [[String: String]] {
         var exports: [[String: String]] = []
+        var profiles: [Data] = []
+        var destinations: [URL] = []
         for profile in ExportColorSpace.allCases {
             let destination = root.appendingPathComponent("\(profile.rawValue).tiff")
             let result = try await engine.export(ExportRequest(
@@ -63,9 +78,63 @@ struct EngineSmoke {
             guard FileManager.default.fileExists(atPath: result.destinationURL.path) else {
                 throw PhotoEngineError.processing("requested export path missing")
             }
-            exports.append(["profile": result.colorSpaceName, "path": result.destinationURL.path])
+            guard let embedded = try EmbeddedICC.read(result.destinationURL, expectedLength: 2_097_152) else {
+                throw PhotoEngineError.invalidOutput("missing actual embedded ICC")
+            }
+            profiles.append(embedded)
+            destinations.append(result.destinationURL)
+            exports.append(["profile": result.colorSpaceName, "path": result.destinationURL.path,
+                            "iccSHA256": SHA256.hash(data: embedded).description])
         }
+        guard Set(profiles).count == 3 else { throw PhotoEngineError.invalidOutput("export profiles are identical") }
+        do {
+            _ = try ImageValidation.validate(destinations[0], expectedICC: profiles[1])
+            throw PhotoEngineError.processing("mismatched embedded ICC accepted")
+        } catch PhotoEngineError.invalidOutput {}
         return exports
+    }
+
+    private static func preserveAndRelease(
+        _ engine: any PhotoEngine, photos: [RenderedPhoto], root: URL
+    ) async throws -> [URL] {
+        var outputs: [URL] = []
+        for (index, photo) in photos.enumerated() {
+            let output = root.appendingPathComponent("preview-\(index).png")
+            try FileManager.default.copyItem(at: photo.imageURL, to: output)
+            await engine.release(photo)
+            guard !FileManager.default.fileExists(atPath: photo.imageURL.path) else {
+                throw PhotoEngineError.processing("preview release did not remove owned image")
+            }
+            outputs.append(output)
+        }
+        return outputs
+    }
+
+    private static func checkCleanup(_ engine: any PhotoEngine, root: URL) async throws {
+        do {
+            _ = try await engine.prepare(sourceURL: root.appendingPathComponent("missing.ARW"), edits: .original)
+            throw PhotoEngineError.invalidOutput("missing source accepted")
+        } catch PhotoEngineError.processing {}
+        let modules = root.appendingPathComponent("WrongRuntime")
+        try FileManager.default.createDirectory(at: modules, withIntermediateDirectories: true)
+        try Data("incompatible-runtime".utf8).write(to: modules.appendingPathComponent("libdarktable.dylib"))
+        let verified = try EngineRuntime.locate()
+        let runtime = EngineRuntime(
+            executable: verified.executable, dataDirectory: verified.dataDirectory, moduleDirectory: modules
+        )
+        do {
+            try runtime.validate()
+            throw PhotoEngineError.processing("incompatible runtime accepted")
+        } catch PhotoEngineError.unavailable {}
+        try FileManager.default.removeItem(at: modules)
+        for folder in ["Requests", "Queries", "Previews"] {
+            let directory = root.appendingPathComponent(folder)
+            let files = FileManager.default.fileExists(atPath: directory.path)
+                ? try FileManager.default.contentsOfDirectory(atPath: directory.path) : []
+            guard files.isEmpty else {
+                throw PhotoEngineError.processing("scratch or preview files leaked")
+            }
+        }
     }
 
     private static func checkCancellation(engine: any PhotoEngine, fixture: URL, edits: EditState) async throws {

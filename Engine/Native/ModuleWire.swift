@@ -48,6 +48,7 @@ struct ModuleWireSchema: Decodable, Sendable {
 
 struct ModuleWireField: Decodable, Sendable {
     var name: String
+    var title: String?
     var type: String
     var offset: Int
     var minimum: Double?
@@ -56,7 +57,7 @@ struct ModuleWireField: Decodable, Sendable {
     var choices: [ModuleParameterChoice]?
 
     enum CodingKeys: String, CodingKey {
-        case name, type, offset
+        case name, title, type, offset
         case minimum = "min"
         case maximum = "max"
         case defaultValue = "default"
@@ -67,7 +68,7 @@ struct ModuleWireField: Decodable, Sendable {
         ModuleParameterField(
             name: name, kind: type == "enum" ? .enumeration : ModuleParameterKind(rawValue: type) ?? .other,
             offset: offset, minimum: minimum, maximum: maximum,
-            defaultValue: defaultValue, choices: choices ?? []
+            defaultValue: defaultValue, choices: choices ?? [], title: title
         )
     }
 }

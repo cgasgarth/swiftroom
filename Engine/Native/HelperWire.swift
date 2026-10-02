@@ -1,5 +1,11 @@
 import Foundation
 
+struct HelperExecutionResult: Sendable {
+    var response: HelperWireResponse
+    var output: URL
+    var directory: URL
+}
+
 struct HelperWireRequest: Encodable, Sendable {
     var source: String
     var xmp: String?
@@ -17,6 +23,7 @@ struct HelperWireResponse: Decodable, Sendable {
     var metadata: PhotoMetadata
     var darktableXMP: Data
     var modules: [HelperWireModule]
+    var outputICC: Data?
 }
 
 struct HelperWireModule: Decodable, Sendable {

@@ -355,6 +355,11 @@ char *dt_bridge_module_schema_json(const char *op, char **err)
     json_builder_begin_object(b);
     json_builder_set_member_name(b, "name");
     json_builder_add_string_value(b, f->header.name);
+    if(f->header.description && *f->header.description)
+    {
+      json_builder_set_member_name(b, "title");
+      json_builder_add_string_value(b, f->header.description);
+    }
     json_builder_set_member_name(b, "type");
     json_builder_add_string_value(b, _type_name(f->header.type));
     json_builder_set_member_name(b, "offset");
@@ -368,6 +373,46 @@ char *dt_bridge_module_schema_json(const char *op, char **err)
         json_builder_add_double_value(b, f->Float.Max);
         json_builder_set_member_name(b, "default");
         json_builder_add_double_value(b, f->Float.Default);
+        break;
+      case DT_INTROSPECTION_TYPE_DOUBLE:
+        json_builder_set_member_name(b, "min");
+        json_builder_add_double_value(b, f->Double.Min);
+        json_builder_set_member_name(b, "max");
+        json_builder_add_double_value(b, f->Double.Max);
+        json_builder_set_member_name(b, "default");
+        json_builder_add_double_value(b, f->Double.Default);
+        break;
+      case DT_INTROSPECTION_TYPE_INT8:
+        json_builder_set_member_name(b, "min");
+        json_builder_add_int_value(b, f->Int8.Min);
+        json_builder_set_member_name(b, "max");
+        json_builder_add_int_value(b, f->Int8.Max);
+        json_builder_set_member_name(b, "default");
+        json_builder_add_int_value(b, f->Int8.Default);
+        break;
+      case DT_INTROSPECTION_TYPE_UINT8:
+        json_builder_set_member_name(b, "min");
+        json_builder_add_int_value(b, f->UInt8.Min);
+        json_builder_set_member_name(b, "max");
+        json_builder_add_int_value(b, f->UInt8.Max);
+        json_builder_set_member_name(b, "default");
+        json_builder_add_int_value(b, f->UInt8.Default);
+        break;
+      case DT_INTROSPECTION_TYPE_SHORT:
+        json_builder_set_member_name(b, "min");
+        json_builder_add_int_value(b, f->Short.Min);
+        json_builder_set_member_name(b, "max");
+        json_builder_add_int_value(b, f->Short.Max);
+        json_builder_set_member_name(b, "default");
+        json_builder_add_int_value(b, f->Short.Default);
+        break;
+      case DT_INTROSPECTION_TYPE_USHORT:
+        json_builder_set_member_name(b, "min");
+        json_builder_add_int_value(b, f->UShort.Min);
+        json_builder_set_member_name(b, "max");
+        json_builder_add_int_value(b, f->UShort.Max);
+        json_builder_set_member_name(b, "default");
+        json_builder_add_int_value(b, f->UShort.Default);
         break;
       case DT_INTROSPECTION_TYPE_INT:
         json_builder_set_member_name(b, "min");
@@ -399,6 +444,11 @@ char *dt_bridge_module_schema_json(const char *op, char **err)
           json_builder_begin_object(b);
           json_builder_set_member_name(b, "name");
           json_builder_add_string_value(b, e->name);
+          if(e->description && *e->description)
+          {
+            json_builder_set_member_name(b, "title");
+            json_builder_add_string_value(b, e->description);
+          }
           json_builder_set_member_name(b, "value");
           json_builder_add_int_value(b, e->value);
           json_builder_end_object(b);

@@ -15,6 +15,7 @@ actor HelperProcess {
                     let process = Process()
                     process.executableURL = executable
                     process.arguments = arguments
+                    process.environment = ProcessInfo.processInfo.environment.filter { !$0.key.hasPrefix("DYLD_") }
                     process.standardOutput = log
                     process.standardError = log
                     process.terminationHandler = { process in
