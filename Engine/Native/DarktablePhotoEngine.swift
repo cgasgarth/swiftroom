@@ -12,6 +12,8 @@ actor DarktablePhotoEngine: PhotoEngine {
     private let cacheDirectory: URL
     private let runtime: EngineRuntime?
     private let process = HelperProcess()
+    var moduleList: [ProcessingModule]?
+    var moduleSchemas: [String: ModuleSchema] = [:]
 
     init(cacheDirectory: URL, runtime: EngineRuntime?) {
         self.cacheDirectory = cacheDirectory
@@ -19,9 +21,10 @@ actor DarktablePhotoEngine: PhotoEngine {
         capabilities = EngineCapabilities(
             name: "darktable", revision: "5.6.0 / 3c17b2976793",
             supportsExposure: runtime != nil, supportsWhiteBalance: runtime != nil,
-            supportsModuleEditing: false, supportsFullResolutionExport: runtime != nil,
+            supportsModuleEditing: runtime != nil, supportsFullResolutionExport: runtime != nil,
             limitations: [
-                "Native module parameter, mask, and pipeline-order controls are still being integrated.",
+                "Scalar parameters are editable; curves and compound arrays remain preserved in opaque blobs.",
+                "Native drawn-mask and blending controls remain incomplete.",
                 "CPU processing; OpenCL acceleration remains disabled during validation.",
                 "White balance uses the camera matrix and darktable's temperature spectral conversion."
             ]
@@ -57,15 +60,14 @@ actor DarktablePhotoEngine: PhotoEngine {
     }
 
     func export(_ request: ExportRequest) async throws -> ExportResult {
-        if request.destinationURL.standardizedFileURL == request.sourceURL.standardizedFileURL {
-            throw PhotoEngineError.unsupported("Export cannot replace the catalog original.")
-        }
+        try ExportSafety.validate(source: request.sourceURL, destination: request.destinationURL)
         let result = try await execute(
             sourceURL: request.sourceURL, edits: request.edits, maximumDimension: request.maximumDimension ?? 0,
             command: "render", format: request.format, colorSpace: request.colorSpace, quality: request.quality
         )
         let dimensions = try validate(result.output)
         try Task.checkCancellation()
+        try ExportSafety.validate(source: request.sourceURL, destination: request.destinationURL)
         let manager = FileManager.default
         if manager.fileExists(atPath: request.destinationURL.path) {
             _ = try manager.replaceItemAt(request.destinationURL, withItemAt: result.output)
@@ -93,7 +95,9 @@ actor DarktablePhotoEngine: PhotoEngine {
         try manager.copyItem(at: sourceURL, to: source)
         var xmp = edits.darktableXMP
         let sourceSidecar = URL(fileURLWithPath: sourceURL.path + ".xmp")
-        if xmp == nil, manager.fileExists(atPath: sourceSidecar.path) { xmp = try Data(contentsOf: sourceSidecar) }
+        if command == "prepare", xmp == nil, manager.fileExists(atPath: sourceSidecar.path) {
+            xmp = try Data(contentsOf: sourceSidecar)
+        }
         let history = directory.appendingPathComponent("history.xmp")
         if let xmp { try xmp.write(to: history, options: .atomic) }
         let output = directory.appendingPathComponent("render.\(format.fileExtension)")
@@ -137,5 +141,35 @@ actor DarktablePhotoEngine: PhotoEngine {
             throw PhotoEngineError.invalidOutput("darktable did not produce a decodable ICC-tagged image.")
         }
         return (image.width, image.height)
+    }
+
+    func query<Input: Encodable & Sendable, Output: Decodable & Sendable>(
+        _ command: String, input: Input
+    ) async throws -> Output {
+        guard let runtime else { throw PhotoEngineError.unavailable("darktable helper unavailable.") }
+        let directory = cacheDirectory.appendingPathComponent("Queries/\(UUID().uuidString)")
+        let manager = FileManager.default
+        try manager.createDirectory(at: directory, withIntermediateDirectories: true)
+        let request = directory.appendingPathComponent("request.json")
+        let response = directory.appendingPathComponent("response.json")
+        let log = directory.appendingPathComponent("helper.log")
+        try JSONEncoder().encode(input).write(to: request, options: .atomic)
+        do {
+            try await process.run(
+                executable: runtime.executable,
+                arguments: runtime.arguments(
+                    command: command, request: request, response: response, directory: directory
+                ),
+                logURL: log
+            )
+            let output = try JSONDecoder().decode(Output.self, from: Data(contentsOf: response))
+            try? manager.removeItem(at: directory)
+            return output
+        } catch {
+            let message = (try? String(contentsOf: log, encoding: .utf8)) ?? error.localizedDescription
+            try? manager.removeItem(at: directory)
+            if Task.isCancelled { throw CancellationError() }
+            throw PhotoEngineError.processing(String(message.suffix(2_000)))
+        }
     }
 }

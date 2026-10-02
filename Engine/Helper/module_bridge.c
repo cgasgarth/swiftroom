@@ -303,6 +303,13 @@ char *dt_bridge_list_modules_json(void)
     json_builder_add_int_value(b, so->version ? so->version() : -1);
     json_builder_set_member_name(b, "have_introspection");
     json_builder_add_boolean_value(b, so->have_introspection);
+    json_builder_set_member_name(b, "title");
+    json_builder_add_string_value(b, so->name ? so->name() : so->op);
+    const int flags = so->flags ? so->flags() : 0;
+    json_builder_set_member_name(b, "supports_instances");
+    json_builder_add_boolean_value(b, !(flags & IOP_FLAGS_ONE_INSTANCE));
+    json_builder_set_member_name(b, "supports_blending");
+    json_builder_add_boolean_value(b, !!(flags & IOP_FLAGS_SUPPORTS_BLENDING));
     _add_doc_url(b, so->op);
     json_builder_end_object(b);
   }
@@ -347,7 +354,7 @@ char *dt_bridge_module_schema_json(const char *op, char **err)
     if(!_is_scalar(f->header.type)) continue;  // skip root struct / arrays / unions
     json_builder_begin_object(b);
     json_builder_set_member_name(b, "name");
-    json_builder_add_string_value(b, f->header.field_name);
+    json_builder_add_string_value(b, f->header.name);
     json_builder_set_member_name(b, "type");
     json_builder_add_string_value(b, _type_name(f->header.type));
     json_builder_set_member_name(b, "offset");
@@ -422,7 +429,7 @@ static void _write_fields_object(dt_iop_module_so_t *so, const void *blob,
     if(!_is_scalar(f->header.type)) continue;
     void *p = so->get_p((void *)blob, f->header.name);
     if(!p) continue;
-    json_builder_set_member_name(b, f->header.field_name);
+    json_builder_set_member_name(b, f->header.name);
     _add_value(b, f, p);
   }
   json_builder_end_object(b);
@@ -549,7 +556,45 @@ static uint8_t *_seed_and_apply(dt_iop_module_so_t *so, const void *defaults,
       {
         // refuse rather than clamp: a silently corrected value would render
         // fine and leave the caller believing the number they sent was used
-        const double num = json_node_get_double(node);
+        const GType value_type = json_node_get_value_type(node);
+        if(f->header.type == DT_INTROSPECTION_TYPE_BOOL && value_type != G_TYPE_BOOLEAN)
+        {
+          _seterr(err, "field '%s' requires a boolean", name);
+          g_list_free(members);
+          g_free(blob);
+          return NULL;
+        }
+        if(f->header.type != DT_INTROSPECTION_TYPE_BOOL
+            && value_type != G_TYPE_DOUBLE && value_type != G_TYPE_INT64)
+        {
+          _seterr(err, "field '%s' requires a numeric value", name);
+          g_list_free(members);
+          g_free(blob);
+          return NULL;
+        }
+        const double num = f->header.type == DT_INTROSPECTION_TYPE_BOOL
+          ? json_node_get_boolean(node) : json_node_get_double(node);
+        if(!isfinite(num) || (f->header.type != DT_INTROSPECTION_TYPE_FLOAT
+            && f->header.type != DT_INTROSPECTION_TYPE_DOUBLE && num != trunc(num)))
+        {
+          _seterr(err, "field '%s' requires a finite value of its declared type", name);
+          g_list_free(members);
+          g_free(blob);
+          return NULL;
+        }
+        if(f->header.type == DT_INTROSPECTION_TYPE_ENUM)
+        {
+          gboolean found = FALSE;
+          for(dt_introspection_type_enum_tuple_t *e = f->Enum.values; e && e->name; e++)
+            if(e->value == num) { found = TRUE; break; }
+          if(!found)
+          {
+            _seterr(err, "unknown numeric enum value for field '%s'", name);
+            g_list_free(members);
+            g_free(blob);
+            return NULL;
+          }
+        }
         double lo = 0.0, hi = 0.0;
         if(!_num_in_range(f, num, &lo, &hi))
         {
@@ -607,4 +652,43 @@ gboolean np_apply_fields(dt_iop_module_t *module, JsonObject *fields, char **err
   else _seterr(err, "module parameter size mismatch");
   g_free(blob);
   return valid;
+}
+
+char *np_parameters_json(JsonObject *request, gboolean update, char **err)
+{
+  const char *op = json_object_get_string_member(request, "operation");
+  dt_iop_module_so_t *so = _find_so(op);
+  if(!so || !so->have_introspection || !so->get_introspection)
+  { _seterr(err, "module has no introspection: %s", op); return NULL; }
+  dt_introspection_t *intro = so->get_introspection();
+  if(intro->api_version != DT_INTROSPECTION_VERSION
+      || intro->params_version != json_object_get_int_member(request, "version"))
+  { _seterr(err, "introspection/module version mismatch: %s", op); return NULL; }
+  gsize size = 0;
+  guchar *input = g_base64_decode(json_object_get_string_member(request, "parameters"), &size);
+  if(size != intro->size)
+  { g_free(input); _seterr(err, "module blob size mismatch: %s", op); return NULL; }
+  JsonBuilder *builder = json_builder_new();
+  json_builder_begin_object(builder);
+  if(update)
+  {
+    size_t output_size = 0;
+    guchar *output = _seed_and_apply(so, input, json_object_get_object_member(request, "values"), &output_size, err);
+    if(!output) { g_free(input); g_object_unref(builder); return NULL; }
+    char *encoded = g_base64_encode(output, output_size);
+    json_builder_set_member_name(builder, "parameters");
+    json_builder_add_string_value(builder, encoded);
+    g_free(encoded);
+    g_free(output);
+  }
+  else
+  {
+    json_builder_set_member_name(builder, "fields");
+    _write_fields_object(so, input, builder);
+  }
+  json_builder_end_object(builder);
+  char *json = _builder_to_string(builder);
+  g_free(input);
+  g_object_unref(builder);
+  return json;
 }

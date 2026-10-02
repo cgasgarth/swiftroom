@@ -7,15 +7,24 @@
     "license": "GPL-3.0-or-later",
     "licenseFile": "COPYING",
     "runtimeOrigin": "/Applications/darktable.app",
-    "requiredABIFlags": ["HAVE_OPENCL", "_DARWIN_C_SOURCE", "_RELEASE"],
-    "processing": "Original CPU pipeline; OpenCL runtime disabled during validation"
+    "requiredABIFlags": [
+      "HAVE_OPENCL",
+      "_DARWIN_C_SOURCE",
+      "_RELEASE"
+    ],
+    "processing": "Original CPU pipeline; OpenCL runtime disabled during validation",
+    "runtimeLibrarySHA256": "922a2d075e8c59d0e9d7f27e73e80cab1a39f3bf64a5ba470ce19b86945fa8db",
+    "runtimeABIGuards": [
+      "Introspection API version 8",
+      "All introspected plugins report matching dt_iop_module_t size and default_params offset"
+    ]
   },
   "derivedFiles": [
     {
       "path": "Helper/module_bridge.c",
       "source": "src/mcp/dt_bridge.c",
       "commit": "b9feba28c4a7a4f9906a1a4eeaf084fd441ba08b",
-      "changes": "Scalar introspection subset plus live-blob field application; render/catalog bridge omitted"
+      "changes": "Scalar introspection subset with full field paths, strict primitive/range/enum validation and seeded full-blob updates; render/catalog bridge omitted"
     },
     {
       "path": "Helper/mcp/dt_bridge.h",
