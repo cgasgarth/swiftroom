@@ -106,11 +106,19 @@ struct NativeLibraryView: View {
         List(selection: Binding(get: { model.selectedIDs }, set: { model.select($0) })) {
             ForEach(model.visibleDocuments) { document in
                 NativeLibraryRow(document: document, isFavorite: store.library.favorites.contains(document.id),
-                    imageURL: previewURLs[document.id])
+                    imageURL: NativeLibraryRow.imageURL(for: document.id, store: store, previewURLs: previewURLs),
+                    thumbnailError: store.thumbnailErrors[document.id])
                     .tag(document.id)
+                    .task(id: PhotoThumbnailRevision(catalogID: store.catalogID, catalogURL: store.catalogURL,
+                        assetID: document.id, edits: document.edits, generation: store.thumbnailGeneration)) {
+                        await store.requestThumbnail(document.id)
+                    }
                     .contextMenu {
                         NativeLibraryActions(model: model,
                             targets: model.selectedIDs.contains(document.id) ? model.selectedIDs : [document.id])
+                        if store.thumbnailErrors[document.id] != nil {
+                            Button("Retry Thumbnail") { store.retryThumbnail(document.id) }
+                        }
                     }
             }
         }

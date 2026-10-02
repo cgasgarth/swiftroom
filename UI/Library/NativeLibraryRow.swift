@@ -5,11 +5,19 @@ struct NativeLibraryRow: View {
     let document: PhotoDocument
     let isFavorite: Bool
     let imageURL: URL?
+    var thumbnailError: String?
+
+    static func imageURL(for id: UUID, store: EditorStore, previewURLs: [UUID: URL]) -> URL? {
+        if let thumbnail = store.thumbnailURLs[id] { return thumbnail }
+        guard !store.isRendering, let preview = store.preview, preview.assetID == id,
+              previewURLs[id] == preview.imageURL else { return nil }
+        return preview.imageURL
+    }
 
     var body: some View {
         HStack(spacing: 8) {
             NativePhotoThumbnail(imageURL: imageURL).frame(width: 42, height: 38)
-                .help(imageURL == nil ? "Preview pending" : document.fileName)
+                .help(thumbnailError ?? (imageURL == nil ? "Thumbnail pending" : document.fileName))
             VStack(alignment: .leading, spacing: 3) {
                 Text(document.fileName).lineLimit(1).truncationMode(.middle)
                 HStack(spacing: 4) {
@@ -19,6 +27,9 @@ struct NativeLibraryRow: View {
                     if isFavorite { Image(systemName: "heart.fill").accessibilityLabel("Favorite") }
                     if document.isRejected { Image(systemName: "xmark.circle").accessibilityLabel("Rejected") }
                     if document.isDirty { Image(systemName: "pencil").accessibilityLabel("Unsaved adjustments") }
+                    if thumbnailError != nil {
+                        Image(systemName: "exclamationmark.triangle").accessibilityLabel("Thumbnail unavailable")
+                    }
                     Text(document.metadata.camera ?? document.fileName.components(separatedBy: ".").last?.uppercased()
                         ?? "Photo").lineLimit(1).truncationMode(.tail)
                 }.font(.caption).foregroundStyle(.secondary)
@@ -29,7 +40,8 @@ struct NativeLibraryRow: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(document.fileName)
         .accessibilityValue("\(document.rating) stars\(isFavorite ? ", favorite" : "")"
-            + "\(document.isRejected ? ", rejected" : "")\(document.isDirty ? ", unsaved adjustments" : "")")
+            + "\(document.isRejected ? ", rejected" : "")\(document.isDirty ? ", unsaved adjustments" : "")"
+            + "\(thumbnailError == nil ? "" : ", thumbnail unavailable")")
         .accessibilityIdentifier("library.photo.\(document.id.uuidString)")
     }
 }
