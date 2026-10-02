@@ -42,6 +42,8 @@ struct EngineCapabilities: Sendable {
     var supportsModuleEditing: Bool
     var supportsFullResolutionExport: Bool
     var limitations: [String]
+    var supportedExportFormats: [ExportFormat] = [.jpeg, .png, .tiff]
+    var supportedExportColorSpaces: [ExportColorSpace] = [.sRGB, .displayP3, .adobeRGB]
 }
 
 struct RenderRequest: Sendable {
@@ -85,6 +87,9 @@ struct ExportRequest: Sendable {
     var colorSpace: ExportColorSpace
     var quality: Double
     var maximumDimension: Int?
+    var protectedSourceURLs: [URL] = []
+    var protectedDirectories: [URL] = []
+    var overwriteAuthorization: ExportOverwriteAuthorization?
 }
 
 struct ExportResult: Sendable {
@@ -100,6 +105,7 @@ protocol PhotoEngine: Sendable {
     func prepare(sourceURL: URL, edits: EditState) async throws -> PreparedPhoto
     func render(_ request: RenderRequest) async throws -> RenderedPhoto
     func export(_ request: ExportRequest) async throws -> ExportResult
+    func release(_ photo: RenderedPhoto) async
     func modules() async throws -> [ProcessingModule]
     func schema(for operation: String) async throws -> ModuleSchema
     func parameters(for module: ModuleState) async throws -> [String: ModuleParameterValue]
@@ -110,6 +116,7 @@ extension PhotoEngine {
     func prepare(sourceURL: URL, edits: EditState) async throws -> PreparedPhoto {
         PreparedPhoto(metadata: try await inspect(sourceURL: sourceURL), edits: edits)
     }
+    func release(_ photo: RenderedPhoto) async { }
 }
 
 enum PhotoEngineError: LocalizedError {

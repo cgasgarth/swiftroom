@@ -30,7 +30,15 @@ enum ModuleParameterValue: Equatable, Sendable {
 extension ModuleParameterValue: Codable {
     init(from decoder: any Decoder) throws {
         let container = try decoder.singleValueContainer()
-        if let value = try? container.decode(Bool.self) { self = .boolean(value) } else if let value = try? container.decode(Int.self) { self = .integer(value) } else if let value = try? container.decode(Double.self) { self = .number(value) } else { self = .text(try container.decode(String.self)) }
+        if let value = try? container.decode(Bool.self) {
+            self = .boolean(value)
+        } else if let value = try? container.decode(Int.self) {
+            self = .integer(value)
+        } else if let value = try? container.decode(Double.self) {
+            self = .number(value)
+        } else {
+            self = .text(try container.decode(String.self))
+        }
     }
 
     func encode(to encoder: any Encoder) throws {
@@ -47,6 +55,7 @@ extension ModuleParameterValue: Codable {
 struct ModuleParameterChoice: Codable, Equatable, Identifiable, Sendable {
     var name: String
     var value: Int
+    var title: String?
     var id: Int { value }
 }
 
@@ -58,6 +67,7 @@ struct ModuleParameterField: Codable, Identifiable, Sendable {
     var maximum: Double?
     var defaultValue: ModuleParameterValue?
     var choices: [ModuleParameterChoice]
+    var title: String?
     var id: String { name }
 }
 
