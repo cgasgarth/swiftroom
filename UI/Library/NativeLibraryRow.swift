@@ -8,7 +8,8 @@ struct NativeLibraryRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            NativeLibraryThumbnail(imageURL: imageURL).frame(width: 42, height: 38)
+            NativePhotoThumbnail(imageURL: imageURL).frame(width: 42, height: 38)
+                .help(imageURL == nil ? "Preview pending" : document.fileName)
             VStack(alignment: .leading, spacing: 3) {
                 Text(document.fileName).lineLimit(1).truncationMode(.middle)
                 HStack(spacing: 4) {
@@ -30,32 +31,6 @@ struct NativeLibraryRow: View {
         .accessibilityValue("\(document.rating) stars\(isFavorite ? ", favorite" : "")"
             + "\(document.isRejected ? ", rejected" : "")\(document.isDirty ? ", unsaved adjustments" : "")")
         .accessibilityIdentifier("library.photo.\(document.id.uuidString)")
-    }
-}
-
-@MainActor
-struct NativeLibraryThumbnail: View {
-    let imageURL: URL?
-
-    var body: some View {
-        Group {
-            if let imageURL {
-                AsyncImage(url: imageURL) { phase in
-                    if let image = phase.image {
-                        image.resizable().scaledToFit()
-                    } else {
-                        pending
-                    }
-                }
-            } else {
-                pending
-            }
-        }.background(Color(nsColor: .controlBackgroundColor))
-            .accessibilityHidden(true)
-    }
-
-    private var pending: some View {
-        Image(systemName: "photo").foregroundStyle(.tertiary).help("Preview available after developing this photo")
     }
 }
 
