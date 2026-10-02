@@ -43,12 +43,21 @@
             await editor.waitForLoad()
             editor.chooseOperation("exposure")
             await editor.waitForLoad()
+            if CommandLine.arguments.contains("--rapid-release-save") {
+                try await rapidReleaseAndSave(editor: editor, store: store)
+                try require(try digest(fixture) == originalHash, "Input RAW was modified.")
+                let copied = try CatalogRepository(rootURL: catalogURL).sourceURL(for: document)
+                try require(try digest(copied) == originalHash, "Copied original was modified.")
+                print("ADVANCED RAPID RELEASE/SAVE PASS \(root.path)")
+                return
+            }
             try await verifyExposure(
                 editor: editor, store: store, document: document, baselineDigest: baselineDigest)
             try await persistence(editor: editor, store: store, baselineDigest: baselineDigest)
             try await basicFolding(editor: editor, store: store)
             try await exposureModes(editor: editor, store: store)
             try await liveGestures(editor: editor, store: store)
+            try await rapidReleaseAndSave(editor: editor, store: store)
             try await options(editor: editor, store: store, engine: engine)
             try await integerEntry(editor: editor, store: store)
             try await switching(editor: editor, store: store, fixture: fixture, firstID: document.id)
@@ -404,6 +413,47 @@
         }
     }
     extension AdvancedModuleWorkflow {
+        @MainActor
+        private static func rapidReleaseAndSave(editor: AdvancedModuleEditor, store: EditorStore) async throws {
+            editor.synchronize()
+            await editor.waitForLoad()
+            let baseline = store.currentEdits
+            editor.sliderEditingChanged(true)
+            editor.setSliderValue("exposure", value: .number(0.25))
+            try await waitForLiveRender(store, baseline: baseline)
+            editor.setSliderValue("exposure", value: .number(0.75))
+            editor.sliderEditingChanged(false)
+            let permitted = store.prepareToClose(.save)
+            try require(!permitted, "Close/save accepted an earlier preview while the final slider sample was queued.")
+            do {
+                try store.saveCatalog()
+                throw AdvancedWorkflowFailure(message: "Save accepted an unfinished slider transaction.")
+            } catch is CatalogError {}
+            await editor.waitForApply()
+            await editor.waitForLoad()
+            await store.waitForRender()
+            guard let module = store.currentEdits.modules.first(where: { $0.id == editor.selectedModuleID }) else {
+                throw AdvancedWorkflowFailure(message: "Final queued module was lost.")
+            }
+            let values = try await store.engine.parameters(for: module)
+            try require(values["exposure"]?.doubleValue == 0.75, "The final slider sample was discarded.")
+            try require(!store.isUpdatingEdits && store.prepareToClose(.save),
+                "Completed slider transaction did not permit close/save.")
+            let reopened = try EditorStore(engine: store.engine, catalogURL: store.catalogURL)
+            try require(reopened.currentEdits == store.currentEdits,
+                "Close/save reopened an earlier preview instead of the final slider value.")
+            print("PASS rapid slider release plus immediate Save/close blocks until final 0.75 is persisted")
+        }
+
+        @MainActor
+        private static func waitForLiveRender(_ store: EditorStore, baseline: EditState) async throws {
+            for _ in 0..<3000 {
+                if store.currentEdits != baseline, store.isRendering { return }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            throw AdvancedWorkflowFailure(message: "The first live sample did not enter real rendering.")
+        }
+
         @MainActor
         private static func liveGestures(editor: AdvancedModuleEditor, store: EditorStore) async throws {
             editor.synchronize()
