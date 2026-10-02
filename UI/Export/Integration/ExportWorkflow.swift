@@ -24,7 +24,7 @@ struct ExportWorkflow {
         await store.importURLs([source, other])
         await store.waitForRender()
         guard store.documents.count == 2, let selected = store.selectedDocument else {
-            throw ExportPresentationError.invalid("The real engine did not import the fixtures.")
+            throw ExportPresentationError.invalid(store.errorMessage ?? "The real engine did not import the fixtures.")
         }
         let snapshot = selected.edits
         var exports = try await exportFormats(store: store, output: output)
