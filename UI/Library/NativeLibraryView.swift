@@ -74,7 +74,7 @@ struct NativeLibraryView: View {
         VStack(alignment: .leading, spacing: 8) {
             TextField("Search photos", text: $model.query.search)
                 .textFieldStyle(.roundedBorder).accessibilityIdentifier("library.search")
-            Picker("Show", selection: $model.query.scope) {
+            Picker("Show", selection: Binding(get: { model.query.scope }, set: model.setScope)) {
                 Text("All Photos").tag(LibraryScope.all)
                 Text("Favorites").tag(LibraryScope.favorites)
                 Text("Rejected").tag(LibraryScope.rejected)
@@ -99,10 +99,6 @@ struct NativeLibraryView: View {
             }
             Toggle("Hide rejected", isOn: $model.query.hidesRejected)
                 .disabled(model.query.scope == .rejected).accessibilityIdentifier("library.hideRejected")
-            if model.query.scope == .rejected, model.query.hidesRejected {
-                Button("Show Rejected Photos") { model.query.hidesRejected = false }
-                    .font(.caption)
-            }
         }.controlSize(.small)
     }
 

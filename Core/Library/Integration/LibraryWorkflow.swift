@@ -95,6 +95,13 @@ enum LibraryWorkflow {
     @MainActor
     private static func verifySelection(model: LibraryController, ids: [UUID]) throws {
         model.select([ids[0]])
+        model.select(Set(ids))
+        try require(model.store.selectedAssetID == ids[2],
+            "Native range selection did not activate the range endpoint.")
+        model.select([ids[0], ids[1]])
+        try require(model.store.selectedAssetID == ids[1],
+            "Shrinking native selection did not activate its endpoint.")
+        model.select([ids[0]])
         model.moveSelection(1, extending: true)
         try require(model.selectedIDs == [ids[0], ids[1]], "Shift movement did not extend the range.")
         model.moveSelection(1, extending: true)

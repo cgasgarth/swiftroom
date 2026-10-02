@@ -56,7 +56,7 @@ final class LibraryController: ObservableObject {
         let visibleIDs = Set(visibleDocuments.map(\.id))
         let valid = ids.intersection(visibleIDs)
         let added = valid.subtracting(selectedIDs)
-        let preferred = preferredID ?? visibleDocuments.first { added.contains($0.id) }?.id
+        let preferred = preferredID ?? selectionFocus(valid: valid, added: added)
         selectedIDs = valid
         if let preferred { rangeAnchorID = preferred }
         reconcileSelection(preferredID: preferred, selectFirstIfEmpty: false)
@@ -167,8 +167,31 @@ final class LibraryController: ObservableObject {
 
     func resetFilters() { query = LibraryQuery() }
 
+    func setScope(_ scope: LibraryScope) {
+        var updated = query
+        updated.scope = scope
+        if scope == .rejected { updated.hidesRejected = false }
+        query = updated
+    }
+
     private func validIDs(_ ids: Set<UUID>) -> Set<UUID> {
         ids.intersection(Set(store.documents.map(\.id)))
+    }
+
+    private func selectionFocus(valid: Set<UUID>, added: Set<UUID>) -> UUID? {
+        let visible = visibleDocuments
+        guard let current = visible.firstIndex(where: { $0.id == store.selectedAssetID }) else {
+            return visible.first { valid.contains($0.id) }?.id
+        }
+        if added.isEmpty, let id = store.selectedAssetID, valid.contains(id) { return id }
+        let candidates = visible.enumerated().filter { (added.isEmpty ? valid : added).contains($0.element.id) }
+        let ordered = candidates.sorted { left, right in
+            let leftDistance = abs(left.offset - current)
+            let rightDistance = abs(right.offset - current)
+            if leftDistance == rightDistance { return left.offset < right.offset }
+            return added.isEmpty ? leftDistance < rightDistance : leftDistance > rightDistance
+        }
+        return ordered.first?.element.id
     }
 
     private func reconcileSelection(preferredID: UUID? = nil, selectFirstIfEmpty: Bool = true) {

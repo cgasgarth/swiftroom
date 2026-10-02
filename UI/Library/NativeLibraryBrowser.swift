@@ -25,7 +25,7 @@ struct NativeLibraryBrowser: View {
                 }.help("Reverse sort order").accessibilityLabel("Reverse sort order")
             }
             HStack {
-                Picker("Show", selection: $model.query.scope) {
+                Picker("Show", selection: Binding(get: { model.query.scope }, set: model.setScope)) {
                     Text("All Photos").tag(LibraryScope.all)
                     Text("Favorites").tag(LibraryScope.favorites)
                     Text("Rejected").tag(LibraryScope.rejected)
