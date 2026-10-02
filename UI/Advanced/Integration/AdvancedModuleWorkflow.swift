@@ -429,6 +429,7 @@
                 try store.saveCatalog()
                 throw AdvancedWorkflowFailure(message: "Save accepted an unfinished slider transaction.")
             } catch is CatalogError {}
+            store.clearError()
             await editor.waitForApply()
             await editor.waitForLoad()
             await store.waitForRender()
