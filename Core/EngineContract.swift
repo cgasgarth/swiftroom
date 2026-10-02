@@ -27,10 +27,10 @@ struct ModuleState: Codable, Equatable, Identifiable, Sendable {
 
 struct EditState: Codable, Equatable, Sendable {
     var exposureEV: Double = 0
-    var temperature: Double? = nil
+    var temperature: Double?
     var tint: Double = 0
     var modules: [ModuleState] = []
-    var darktableXMP: Data? = nil
+    var darktableXMP: Data?
     static let original = EditState()
 }
 
@@ -42,6 +42,8 @@ struct EngineCapabilities: Sendable {
     var supportsModuleEditing: Bool
     var supportsFullResolutionExport: Bool
     var limitations: [String]
+    var supportedExportFormats: [ExportFormat] = [.jpeg, .png, .tiff]
+    var supportedExportColorSpaces: [ExportColorSpace] = [.sRGB, .displayP3, .adobeRGB]
 }
 
 struct RenderRequest: Sendable {
@@ -52,6 +54,11 @@ struct RenderRequest: Sendable {
     var maximumDimension: Int
 }
 
+struct PreparedPhoto: Sendable {
+    var metadata: PhotoMetadata
+    var edits: EditState
+}
+
 struct RenderedPhoto: Sendable {
     var assetID: UUID
     var generation: UInt64
@@ -60,6 +67,7 @@ struct RenderedPhoto: Sendable {
     var pixelHeight: Int
     var colorSpaceName: String
     var engineRevision: String
+    var isFullResolution: Bool = false
 }
 
 enum ExportFormat: String, Codable, CaseIterable, Sendable {
@@ -80,6 +88,10 @@ struct ExportRequest: Sendable {
     var colorSpace: ExportColorSpace
     var quality: Double
     var maximumDimension: Int?
+    var protectedSourceURLs: [URL] = []
+    var protectedDirectories: [URL] = []
+    var protectedCatalogURLs: [URL] = []
+    var overwriteAuthorization: ExportOverwriteAuthorization?
 }
 
 struct ExportResult: Sendable {
@@ -92,15 +104,29 @@ struct ExportResult: Sendable {
 protocol PhotoEngine: Sendable {
     var capabilities: EngineCapabilities { get }
     func inspect(sourceURL: URL) async throws -> PhotoMetadata
+    func prepare(sourceURL: URL, edits: EditState) async throws -> PreparedPhoto
     func render(_ request: RenderRequest) async throws -> RenderedPhoto
     func export(_ request: ExportRequest) async throws -> ExportResult
+    func release(_ photo: RenderedPhoto) async
+    func modules() async throws -> [ProcessingModule]
+    func schema(for operation: String) async throws -> ModuleSchema
+    func parameters(for module: ModuleState) async throws -> [String: ModuleParameterValue]
+    func updating(module: ModuleState, values: [String: ModuleParameterValue]) async throws -> ModuleState
+}
+
+extension PhotoEngine {
+    func prepare(sourceURL: URL, edits: EditState) async throws -> PreparedPhoto {
+        PreparedPhoto(metadata: try await inspect(sourceURL: sourceURL), edits: edits)
+    }
+    func release(_ photo: RenderedPhoto) async { }
 }
 
 enum PhotoEngineError: LocalizedError {
     case unavailable(String), unsupported(String), processing(String), invalidOutput(String)
     var errorDescription: String? {
         switch self {
-        case .unavailable(let text), .unsupported(let text), .processing(let text), .invalidOutput(let text): return text
+        case .unavailable(let text), .unsupported(let text), .processing(let text), .invalidOutput(let text):
+            return text
         }
     }
 }

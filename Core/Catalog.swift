@@ -20,6 +20,7 @@ struct PhotoDocument: Codable, Equatable, Identifiable, Sendable {
     var rating: Int = 0
     var isRejected: Bool = false
     var importedAt: Date = Date()
+    var originalSidecarPath: String?
 
     var isDirty: Bool { edits != savedEdits }
     var canUndo: Bool { historyIndex > 0 }
@@ -53,17 +54,20 @@ struct PhotoDocument: Codable, Equatable, Identifiable, Sendable {
 }
 
 struct PhotoCatalog: Codable, Sendable {
-    var schemaVersion: Int = 1
+    var schemaVersion: Int = 2
     var id: UUID = UUID()
     var createdAt: Date = Date()
     var documents: [PhotoDocument] = []
     var selectedAssetID: UUID?
+    var library: LibraryCatalog?
 }
 
 enum CatalogError: LocalizedError {
     case invalid(String)
     var errorDescription: String? {
-        switch self { case .invalid(let text): return text }
+        switch self {
+        case .invalid(let text): return text
+        }
     }
 }
 
@@ -75,16 +79,21 @@ struct CatalogRepository: Sendable {
     func prepare() throws {
         try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: cacheURL, withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: rootURL.appendingPathComponent("Originals"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+            at: rootURL.appendingPathComponent("Originals"), withIntermediateDirectories: true)
     }
 
     func load() throws -> PhotoCatalog {
         try prepare()
         guard FileManager.default.fileExists(atPath: catalogURL.path) else { return PhotoCatalog() }
+        let data = try Data(contentsOf: catalogURL)
+        let header = try JSONDecoder().decode(CatalogHeader.self, from: data)
+        guard header.schemaVersion == 2 else {
+            throw CatalogError.invalid("This catalog uses an unsupported version.")
+        }
         let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        let catalog = try decoder.decode(PhotoCatalog.self, from: Data(contentsOf: catalogURL))
-        guard catalog.schemaVersion == 1 else { throw CatalogError.invalid("This catalog uses an unsupported version.") }
+        decoder.dateDecodingStrategy = .deferredToDate
+        let catalog = try decoder.decode(PhotoCatalog.self, from: data)
         guard Set(catalog.documents.map(\.id)).count == catalog.documents.count else {
             throw CatalogError.invalid("The catalog contains duplicate photo identifiers.")
         }
@@ -101,28 +110,76 @@ struct CatalogRepository: Sendable {
         try prepare()
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        encoder.dateEncodingStrategy = .iso8601
+        encoder.dateEncodingStrategy = .deferredToDate
         try encoder.encode(catalog).write(to: catalogURL, options: .atomic)
     }
 
     func sourceURL(for document: PhotoDocument) throws -> URL {
         let relative = document.relativeOriginalPath
-        guard relative.hasPrefix("Originals/"), !relative.split(separator: "/").contains(".."), !relative.hasPrefix("/") else {
+        guard relative.hasPrefix("Originals/"), !relative.split(separator: "/").contains(".."),
+              !relative.hasPrefix("/") else {
             throw CatalogError.invalid("The catalog contains an unsafe original path.")
         }
         let url = rootURL.appendingPathComponent(relative).standardizedFileURL
         guard url.path.hasPrefix(rootURL.standardizedFileURL.path + "/Originals/") else {
             throw CatalogError.invalid("The original is outside this catalog.")
         }
+        let root = rootURL.resolvingSymlinksInPath().standardizedFileURL
+        guard url.resolvingSymlinksInPath().standardizedFileURL.path.hasPrefix(root.path + "/Originals/") else {
+            throw CatalogError.invalid("The catalog original links outside this catalog.")
+        }
         return url
     }
 
-    func copyOriginal(from source: URL, id: UUID) throws -> String {
+    func copyOriginal(from source: URL, id: UUID, resolvedSourceURL: URL? = nil) throws -> String {
+        try copyImportedOriginal(from: source, id: id, resolvedSourceURL: resolvedSourceURL).relativePath
+    }
+
+    func copyImportedOriginal(
+        from source: URL, id: UUID, resolvedSourceURL: URL? = nil
+    ) throws -> ImportedOriginalCopy {
         let directory = rootURL.appendingPathComponent("Originals/\(id.uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let destination = directory.appendingPathComponent(source.lastPathComponent)
-        do { try FileManager.default.copyItem(at: source, to: destination) }
-        catch { try? FileManager.default.removeItem(at: directory); throw error }
-        return "Originals/\(id.uuidString)/\(source.lastPathComponent)"
+        let resolvedSource = resolvedSourceURL ?? source.resolvingSymlinksInPath().standardizedFileURL
+        var originalSidecarPath: String?
+        do {
+            try copyRegularFile(from: resolvedSource, to: destination)
+            let sidecarCandidates = [
+                URL(fileURLWithPath: source.path + ".xmp"),
+                source.deletingPathExtension().appendingPathExtension("xmp"),
+                URL(fileURLWithPath: resolvedSource.path + ".xmp"),
+                resolvedSource.deletingPathExtension().appendingPathExtension("xmp")
+            ]
+            if let sidecar = sidecarCandidates.first(where: { FileManager.default.fileExists(atPath: $0.path) }) {
+                let resolvedSidecar = sidecar.resolvingSymlinksInPath().standardizedFileURL
+                try copyRegularFile(from: resolvedSidecar,
+                                    to: URL(fileURLWithPath: destination.path + ".xmp"))
+                originalSidecarPath = resolvedSidecar.path
+            }
+        } catch {
+            try? FileManager.default.removeItem(at: directory)
+            throw error
+        }
+        return ImportedOriginalCopy(relativePath: "Originals/\(id.uuidString)/\(source.lastPathComponent)",
+                                    originalSourcePath: resolvedSource.path, originalSidecarPath: originalSidecarPath)
     }
+
+    private func copyRegularFile(from source: URL, to destination: URL) throws {
+        let attributes = try FileManager.default.attributesOfItem(atPath: source.path)
+        guard attributes[.type] as? FileAttributeType == .typeRegular else {
+            throw CatalogError.invalid("Only regular image and XMP files can be imported.")
+        }
+        try FileManager.default.copyItem(at: source, to: destination)
+    }
+}
+
+struct ImportedOriginalCopy: Sendable {
+    let relativePath: String
+    let originalSourcePath: String
+    let originalSidecarPath: String?
+}
+
+private struct CatalogHeader: Decodable {
+    var schemaVersion: Int
 }
