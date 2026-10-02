@@ -209,13 +209,15 @@ enum LibraryWorkflow {
         try store.saveCatalog()
         let reopened = try EditorStore(engine: engine, catalogURL: store.catalogURL)
         try require(reopened.library == store.library, "Save/reopen changed library metadata.")
-        try require(reopened.documents == store.documents, "Save/reopen lost ratings, flags, edits or history.")
+        try require(try persistedData(reopened.documents) == persistedData(store.documents),
+            "Save/reopen lost ratings, flags, edits or history.")
         try require(!reopened.hasUnsavedChanges, "Reopened catalog is dirty.")
         try require(reopened.selectedAssetID == store.selectedAssetID, "Save/reopen changed active selection.")
         if let edited {
             reopened.selectAsset(edited.id)
             try require(reopened.currentEdits == edited.edits, "Saved edits changed after selection.")
-            try require(reopened.history == edited.history, "Saved gesture history changed after selection.")
+            try require(try persistedData(reopened.history) == persistedData(edited.history),
+                "Saved gesture history changed after selection.")
             reopened.undo()
             try require(reopened.currentEdits.exposureEV == 0, "Library metadata operations damaged adjustment undo.")
             try require(reopened.library == store.library, "Adjustment undo changed library metadata.")
@@ -248,6 +250,13 @@ enum LibraryWorkflow {
 
     private static func digest(_ url: URL) throws -> String {
         SHA256.hash(data: try Data(contentsOf: url)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func persistedData<Value: Encodable>(_ value: Value) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.sortedKeys]
+        return try encoder.encode(value)
     }
 }
 
