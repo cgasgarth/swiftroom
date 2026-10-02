@@ -32,7 +32,9 @@ actor DarktablePhotoEngine: PhotoEngine {
             supportsModuleEditing: runtime != nil, supportsFullResolutionExport: runtime != nil,
             limitations: [
                 "Scalar parameters are editable; curves and compound arrays remain preserved in opaque blobs.",
-                "Numeric circle, ellipse, gradient and ordered-group masks are editable; canvas mapping is unverified.",
+                "Numeric circle, ellipse, gradient, path, brush and ordered-group masks are editable; " +
+                    "canvas mapping is unverified.",
+                "Brush-containing images use one CPU worker for repeatable pixels.",
                 "Seeded modes, opacity and drawn assignment are editable; " +
                     "parametric and raster editors are unavailable.",
                 "CPU processing; OpenCL acceleration remains disabled during validation.",
