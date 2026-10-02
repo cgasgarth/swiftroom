@@ -72,11 +72,14 @@ enum SafetyWorkflow {
     }
 
     private static func linkedImport(store: EditorStore, fixture: URL, output: URL) async throws {
+        guard let data = store.currentEdits.darktableXMP else { throw WorkflowFailure("Missing full import XMP.") }
+        let catalog = output.appendingPathComponent("LinkedOnlyCatalog")
+        let linkedEngine = NativePhotoEngineFactory.make(cacheDirectory: catalog.appendingPathComponent("Cache"))
+        let store = try EditorStore(engine: linkedEngine, catalogURL: catalog)
         let folder = output.appendingPathComponent("LinkedInput")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let symbolic = folder.appendingPathComponent("linked." + fixture.pathExtension)
         let xmp = folder.appendingPathComponent("original.xmp")
-        guard let data = store.currentEdits.darktableXMP else { throw WorkflowFailure("Missing full import XMP.") }
         try data.write(to: xmp)
         let symbolicXMP = URL(fileURLWithPath: symbolic.path + ".xmp")
         try FileManager.default.createSymbolicLink(at: symbolic, withDestinationURL: fixture)
@@ -100,6 +103,7 @@ enum SafetyWorkflow {
         try FileManager.default.removeItem(at: symbolic)
         try FileManager.default.removeItem(at: symbolicXMP)
         try FileManager.default.removeItem(at: xmp)
+        try protectLinkedOriginal(store: store, document: document, fixture: fixture)
         store.retryRender()
         await store.waitForRender()
         try requireWorkflow(store.preview?.assetID == document.id, "Removing input aliases broke the catalog copy.")
@@ -114,5 +118,25 @@ enum SafetyWorkflow {
         } catch CatalogError.invalid { }
         try FileManager.default.removeItem(at: external)
         print("PASS symlink RAW/adjacent XMP materialized as regular files; external catalog links rejected")
+    }
+
+    private static func protectLinkedOriginal(store: EditorStore, document: PhotoDocument, fixture: URL) throws {
+        try requireWorkflow(document.originalSourcePath == fixture.resolvingSymlinksInPath().standardizedFileURL.path,
+                            "Linked import did not retain the resolved original source path.")
+        let authorization = try ExportOverwriteAuthorization.capture(destination: fixture)
+        do {
+            _ = try store.makeExportRequest(destination: fixture, format: .png, colorSpace: .sRGB,
+                quality: 0.95, maximumDimension: 1600, overwriteAuthorization: authorization)
+            throw WorkflowFailure("Removing the import symlink allowed replacement of the source original.")
+        } catch PhotoEngineError.unsupported { }
+        for destination in [URL(fileURLWithPath: fixture.path + ".xmp"),
+                            fixture.deletingPathExtension().appendingPathExtension("xmp")] {
+            do {
+                _ = try store.makeExportRequest(destination: destination, format: .png, colorSpace: .sRGB,
+                    quality: 0.95, maximumDimension: 1600)
+                throw WorkflowFailure("Export accepted an original-sidecar location.")
+            } catch PhotoEngineError.unsupported { }
+        }
+        print("PASS removed import aliases retain original and adjacent-sidecar export protection")
     }
 }

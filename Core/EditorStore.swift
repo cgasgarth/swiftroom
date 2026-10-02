@@ -133,8 +133,9 @@ extension EditorStore {
             statusMessage = "Importing \(offset + 1) of \(urls.count)…"
             do {
                 let id = UUID()
+                let originalSourceURL = url.resolvingSymlinksInPath().standardizedFileURL
                 let relative = try await Task.detached(priority: .userInitiated) {
-                    try importRepository.copyOriginal(from: url, id: id)
+                    try importRepository.copyOriginal(from: url, id: id, resolvedSourceURL: originalSourceURL)
                 }.value
                 let copiedURL = importCatalogURL.appendingPathComponent(relative)
                 let prepared: PreparedPhoto
@@ -147,7 +148,7 @@ extension EditorStore {
                     throw CatalogError.invalid("The catalog changed during import.")
                 }
                 let document = PhotoDocument(id: id, fileName: url.lastPathComponent,
-                    originalSourcePath: url.path, relativeOriginalPath: relative,
+                    originalSourcePath: originalSourceURL.path, relativeOriginalPath: relative,
                     metadata: prepared.metadata, edits: prepared.edits,
                     history: [HistoryEntry(label: "Original", edits: prepared.edits)],
                     historyIndex: 0, savedEdits: prepared.edits)
@@ -499,7 +500,10 @@ extension EditorStore {
             throw PhotoEngineError.unsupported("This engine does not support full-resolution export.")
         }
         let sources = try documents.flatMap { document in
-            [try repository.sourceURL(for: document), URL(fileURLWithPath: document.originalSourcePath)]
+            let original = URL(fileURLWithPath: document.originalSourcePath)
+            return [try repository.sourceURL(for: document), original,
+                    URL(fileURLWithPath: original.path + ".xmp"),
+                    original.deletingPathExtension().appendingPathExtension("xmp")]
         }
         let request = ExportRequest(
             assetID: document.id, sourceURL: try repository.sourceURL(for: document), edits: document.edits,

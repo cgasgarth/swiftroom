@@ -130,12 +130,12 @@ struct CatalogRepository: Sendable {
         return url
     }
 
-    func copyOriginal(from source: URL, id: UUID) throws -> String {
+    func copyOriginal(from source: URL, id: UUID, resolvedSourceURL: URL? = nil) throws -> String {
         let directory = rootURL.appendingPathComponent("Originals/\(id.uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let destination = directory.appendingPathComponent(source.lastPathComponent)
         do {
-            let resolvedSource = source.resolvingSymlinksInPath().standardizedFileURL
+            let resolvedSource = resolvedSourceURL ?? source.resolvingSymlinksInPath().standardizedFileURL
             try copyRegularFile(from: resolvedSource, to: destination)
             let sidecarCandidates = [
                 URL(fileURLWithPath: source.path + ".xmp"),
