@@ -8,7 +8,7 @@ LIBRARY_ROOT="${NATIVE_PHOTO_LIBRARY_SOURCE:-$CORE_ROOT/Library}"
 SWIFTC="${NATIVE_PHOTO_SWIFTC:-/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc}"
 SDK="${NATIVE_PHOTO_SDK:-/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk}"
 mkdir -p "$PROJECT/build/module-cache"
-SOURCES=("$ADVANCED_ROOT/AdvancedModuleEditor.swift" "$ADVANCED_ROOT/AdvancedParameterValue.swift" "$ADVANCED_ROOT/Integration/AdvancedModuleWorkflow.swift")
+SOURCES=("$ADVANCED_ROOT/AdvancedModuleEditor.swift" "$ADVANCED_ROOT/AdvancedParameterValue.swift" "$ADVANCED_ROOT/AdvancedFieldPresentation.swift" "$ADVANCED_ROOT/Integration/AdvancedModuleWorkflow.swift")
 while IFS= read -r path; do SOURCES+=("$path"); done < <(find "$CORE_ROOT" "$ENGINE_ROOT/Native" -name '*.swift' -type f | sort)
 if test "$LIBRARY_ROOT" != "$CORE_ROOT/Library"; then
     while IFS= read -r path; do SOURCES+=("$path"); done < <(find "$LIBRARY_ROOT" -name '*.swift' -type f | sort)

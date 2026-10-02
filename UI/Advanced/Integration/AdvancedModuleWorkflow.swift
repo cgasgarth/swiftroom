@@ -47,6 +47,7 @@
                 editor: editor, store: store, document: document, baselineDigest: baselineDigest)
             try await persistence(editor: editor, store: store, baselineDigest: baselineDigest)
             try await basicFolding(editor: editor, store: store)
+            try await exposureModes(editor: editor, store: store)
             try await options(editor: editor, store: store, engine: engine)
             try await integerEntry(editor: editor, store: store)
             try await switching(editor: editor, store: store, fixture: fixture, firstID: document.id)
@@ -74,10 +75,8 @@
             }
             try require(
                 editor.canEdit && !editor.hasChanges, "Decoded current values created a false dirty draft.")
-            let target = originalEV + 0.75
-            guard let preciseValue = exposureField.parsedValue(String(target)) else {
-                throw AdvancedWorkflowFailure(message: "Exact exposure entry rejected real schema bounds.")
-            }
+            let target = 1.45
+            let preciseValue = try hundredthsValue(field: exposureField, current: originalEV)
             editor.setValue("exposure", value: preciseValue)
             editor.setValidity("exposure", valid: false)
             try require(!editor.canApply, "Invalid numeric draft allowed Apply.")
@@ -141,6 +140,24 @@
     }
 
     extension AdvancedModuleWorkflow {
+        private static func hundredthsValue(
+            field: ModuleParameterField, current: Double
+        ) throws -> ModuleParameterValue {
+            let presentation = AdvancedNumericPresentation(field: field, unit: "EV")
+            try require(presentation.text(for: .number(current)) == "0.70",
+                "Loaded exposure was not shown at hundredths.")
+            try require(presentation.parsedValue("1.451") == nil,
+                "Floating entry accepted precision above hundredths.")
+            try require(presentation.cappedEntry("1.451") == "1.45",
+                "Floating control retained more than two fractional digits.")
+            guard let value = presentation.parsedValue("1.45") else {
+                throw AdvancedWorkflowFailure(message: "Hundredths exposure entry rejected real schema bounds.")
+            }
+            try require(presentation.roundedValue(1.454) == value,
+                "Slider staging exceeded the displayed hundredths contract.")
+            return value
+        }
+
         @MainActor
         private static func basicFolding(editor: AdvancedModuleEditor, store: EditorStore) async throws {
             guard let before = editor.values["exposure"]?.doubleValue else {
@@ -171,6 +188,63 @@
             try require(try pixels(folded.imageURL) == expectedPixels,
                 "Folding basic exposure changed developed pixels.")
             print("PASS effective advanced values and pixel-exact basic exposure folding")
+        }
+
+        @MainActor
+        private static func exposureModes(editor: AdvancedModuleEditor, store: EditorStore) async throws {
+            guard let schema = editor.schema, let baseline = store.preview,
+                let mode = schema.fields.first(where: { $0.name == "mode" }),
+                let automatic = mode.choices.first(where: { $0.name == "EXPOSURE_MODE_DEFLICKER" }),
+                let percentile = editor.values["deflicker_percentile"]?.doubleValue,
+                let target = editor.values["deflicker_target_level"]?.doubleValue else {
+                throw AdvancedWorkflowFailure(message: "Real exposure mode metadata unavailable.")
+            }
+            let before = store.currentEdits
+            let manual = AdvancedFieldPresentation(schema: schema, values: editor.values)
+            try require(manual.hasExposureSemantics && manual.automatic == false,
+                "Pinned exposure presentation did not recognize the real manual mode.")
+            try require(!manual.fields.contains { $0.name == "deflicker_target_level" },
+                "Inactive automatic controls were shown in manual mode.")
+            let baselinePixels = try pixels(baseline.imageURL)
+            editor.setValue("deflicker_percentile", value: .number(percentile + 5))
+            editor.setValue("deflicker_target_level", value: .number(target + 1))
+            let inactive = try await appliedPreview(editor: editor, store: store)
+            try require(try pixels(inactive.imageURL) == baselinePixels,
+                "Automatic settings unexpectedly changed manual-mode RAW pixels.")
+            editor.setValue("mode", value: .integer(automatic.value))
+            let automaticFields = AdvancedFieldPresentation(schema: schema, values: editor.values)
+            try require(automaticFields.automatic == true
+                && automaticFields.fields.contains { $0.name == "deflicker_target_level" }
+                && !automaticFields.fields.contains { $0.name == "exposure" },
+                "Automatic mode did not replace the inactive manual controls.")
+            let automaticPreview = try await appliedPreview(editor: editor, store: store)
+            let automaticPixels = try pixels(automaticPreview.imageURL)
+            editor.setValue("deflicker_target_level", value: .number(target + 2))
+            let changed = try await appliedPreview(editor: editor, store: store)
+            try require(try pixels(changed.imageURL) != automaticPixels,
+                "Active automatic target did not change real RAW pixels.")
+            store.undo()
+            store.undo()
+            store.undo()
+            await store.waitForRender()
+            editor.synchronize()
+            await editor.waitForLoad()
+            try require(store.currentEdits == before, "Mode checks failed to restore complete module state.")
+            print("PASS actual RAW manual/automatic control semantics and preserved inactive parameters")
+        }
+
+        @MainActor
+        private static func appliedPreview(
+            editor: AdvancedModuleEditor, store: EditorStore
+        ) async throws -> RenderedPhoto {
+            editor.apply()
+            await editor.waitForApply()
+            await editor.waitForLoad()
+            await store.waitForRender()
+            guard let preview = store.preview, store.errorMessage == nil else {
+                throw AdvancedWorkflowFailure(message: "Exposure mode adjustment did not render.")
+            }
+            return preview
         }
 
         @MainActor

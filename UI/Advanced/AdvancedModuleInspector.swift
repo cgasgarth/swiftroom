@@ -19,8 +19,8 @@ struct AdvancedModuleInspector: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            operationBrowser
+        VStack(alignment: .leading, spacing: 16) {
+            adjustmentSelection
             if editor.isLoading {
                 HStack {
                     ProgressView().controlSize(.small)
@@ -42,11 +42,13 @@ struct AdvancedModuleInspector: View {
                 .accessibilityIdentifier("advanced.error")
             }
             if !editor.selectedOperation.isEmpty {
-                moduleIdentity
                 moduleContent
+                moduleManagement
+                operationBrowser
                 supportNotice
+                if editor.hasChanges || !editor.invalidFields.isEmpty || !editor.nameIsValid { draftActions }
             }
-            if let status = editor.statusMessage {
+            if let status = editor.statusMessage, !editor.hasChanges {
                 Text(status).font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .accessibilityIdentifier("advanced.status")
@@ -61,44 +63,58 @@ struct AdvancedModuleInspector: View {
         .onDisappear { editor.cancel() }
     }
 
-    private var operationBrowser: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            TextField("Search operations", text: $search)
-                .textFieldStyle(.roundedBorder)
-                .accessibilityIdentifier("advanced.search")
-            Toggle("Show all engine operations", isOn: $showsAllOperations)
-                .toggleStyle(.checkbox)
-                .accessibilityIdentifier("advanced.allOperations")
-            if filteredOperations.isEmpty {
-                Text(
-                    search.isEmpty ? "No retained modules in this photo." : "No operations match this search."
-                )
-                .font(.callout).foregroundStyle(.secondary)
-            }
-            Picker(
-                "Operation",
-                selection: Binding(get: { editor.selectedOperation }, set: editor.chooseOperation)
-            ) {
-                if editor.selectedOperation.isEmpty { Text("Choose an operation").tag("") }
-                ForEach(filteredOperations) { operation in
-                    Text(
-                        operation.title + (operation.instanceCount > 0 ? " (\(operation.instanceCount))" : "")
-                    )
-                    .tag(operation.operation)
-                }
-                if !filteredOperations.contains(where: { $0.operation == editor.selectedOperation }),
-                    let current = editor.operations.first(where: { $0.operation == editor.selectedOperation }) {
-                    Text("Current: \(current.title)").tag(current.operation)
+    private var adjustmentSelection: some View {
+        HStack {
+            Picker("Adjustment", selection: Binding(
+                get: { editor.selectedOperation }, set: editor.chooseOperation
+            )) {
+                if editor.selectedOperation.isEmpty { Text("Choose Adjustment").tag("") }
+                ForEach(editor.operations.filter { $0.instanceCount > 0 || $0.operation == editor.selectedOperation }) {
+                    Text(operationTitle($0)).tag($0.operation)
                 }
             }
-            .pickerStyle(.menu)
+            .labelsHidden().pickerStyle(.menu)
             .disabled(editor.isApplying || editor.operations.isEmpty)
-            .accessibilityIdentifier("advanced.operation")
-            if search.isEmpty {
-                Text("\(filteredOperations.count) operations")
-                    .font(.caption).foregroundStyle(.secondary)
+            .accessibilityLabel("Adjustment").accessibilityIdentifier("advanced.operation")
+            Spacer(minLength: 4)
+            if editor.hasLoadedValues {
+                Toggle("Enabled", isOn: $editor.draftEnabled)
+                    .toggleStyle(.checkbox).disabled(!editor.canEdit)
+                    .accessibilityIdentifier("advanced.enabled")
             }
         }
+    }
+
+    private var operationBrowser: some View {
+        DisclosureGroup("Search Adjustments") {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Find an adjustment by name, then choose a match.")
+                    .font(.caption).foregroundStyle(.secondary)
+                TextField("Search adjustments", text: $search)
+                    .textFieldStyle(.roundedBorder).accessibilityIdentifier("advanced.search")
+                Toggle("Include unused adjustments", isOn: $showsAllOperations)
+                    .toggleStyle(.checkbox).accessibilityIdentifier("advanced.allOperations")
+                if filteredOperations.isEmpty {
+                    Text("No adjustments match this search.").font(.callout).foregroundStyle(.secondary)
+                } else {
+                    Picker("Matches", selection: Binding(
+                        get: { editor.selectedOperation }, set: editor.chooseOperation
+                    )) {
+                        ForEach(filteredOperations) { Text(operationTitle($0)).tag($0.operation) }
+                        if !filteredOperations.contains(where: { $0.operation == editor.selectedOperation }) {
+                            Text("Current Adjustment").tag(editor.selectedOperation)
+                        }
+                    }
+                    .pickerStyle(.menu).disabled(editor.isApplying)
+                    .accessibilityIdentifier("advanced.searchResults")
+                }
+            }.padding(.top, 6)
+        }
+    }
+
+    private func operationTitle(_ operation: AdvancedOperation) -> String {
+        let title = operation.title.prefix(1).uppercased() + operation.title.dropFirst()
+        return title + (operation.instanceCount > 1 ? " (\(operation.instanceCount))" : "")
     }
 
     private var filteredOperations: [AdvancedOperation] {
@@ -110,67 +126,66 @@ struct AdvancedModuleInspector: View {
         }
     }
 
-    private var moduleIdentity: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Divider()
-            if !editor.instances.isEmpty {
-                Picker(
-                    "Instance",
-                    selection: Binding(
+    private var moduleManagement: some View {
+        DisclosureGroup("Adjustment Options") {
+            VStack(alignment: .leading, spacing: 10) {
+                if editor.instances.count > 1 {
+                    Picker("Instance", selection: Binding(
                         get: { editor.selectedModuleID },
-                        set: { id in
-                            if let id { editor.chooseInstance(id) }
-                        })
-                ) {
-                    ForEach(editor.instances) { module in
-                        Text(instanceTitle(module)).tag(Optional(module.id))
+                        set: { if let id = $0 { editor.chooseInstance(id) } }
+                    )) {
+                        ForEach(editor.instances) { Text(instanceTitle($0)).tag(Optional($0.id)) }
                     }
+                    .pickerStyle(.menu).disabled(editor.isApplying)
+                    .accessibilityIdentifier("advanced.instance")
                 }
-                .pickerStyle(.menu).disabled(editor.isApplying)
-                .accessibilityIdentifier("advanced.instance")
-            }
-            DisclosureGroup("Module Details") {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Operation: \(editor.selectedOperation)")
-                    if let module = editor.instances.first(where: { $0.id == editor.selectedModuleID }) {
-                        Text("Version \(module.version) · Instance \(module.instance + 1)")
-                        if let name = module.name { Text("Engine label: \(name)") }
+                if editor.hasLoadedValues {
+                    HStack {
+                        Text("Name")
+                        TextField("Adjustment name", text: Binding(
+                            get: { editor.draftName.advancedInstanceLabel },
+                            set: { text in
+                                if text != editor.draftName.advancedInstanceLabel { editor.draftName = text }
+                            }
+                        ))
+                        .textFieldStyle(.roundedBorder).disabled(!editor.canEdit)
+                        .accessibilityLabel("Adjustment name").accessibilityIdentifier("advanced.name")
                     }
+                    if !editor.nameIsValid {
+                        Text("Use at most 127 UTF-8 bytes for the name.")
+                            .font(.caption).foregroundStyle(.red)
+                    }
+                    Button("Reset Parameters", action: editor.resetDefaults)
+                        .disabled(!editor.canEdit || editor.resettableFields.isEmpty)
+                        .help("Use darktable’s declared defaults for all editable parameters. Apply to keep the reset.")
+                        .accessibilityIdentifier("advanced.resetAll")
                 }
-                .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                .padding(.top, 6)
-            }
+                DisclosureGroup("Technical Details") {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Operation: \(editor.selectedOperation)")
+                        if let module = editor.instances.first(where: { $0.id == editor.selectedModuleID }) {
+                            Text("Version \(module.version) · Instance \(module.instance + 1)")
+                            if let name = module.name { Text("Stored name: \(name)") }
+                        }
+                    }.font(.caption).foregroundStyle(.secondary).textSelection(.enabled).padding(.top, 6)
+                }
+            }.padding(.top, 6)
         }
     }
 
     @ViewBuilder
     private var moduleContent: some View {
         if editor.instances.isEmpty {
-            Text("This operation has no instance in the photo. Adding modules is not yet available.")
+            Text("This adjustment is not used in the photo. Adding adjustments is not yet available.")
                 .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             if let schema = editor.schema { availableSchema(schema) }
         } else if editor.selectedDescriptor?.hasIntrospection == false {
-            Text("This operation does not expose a parameter schema. Its complete state is retained.")
+            Text("These settings cannot be edited yet. The adjustment’s current effects are preserved.")
                 .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         } else if let schema = editor.schema, editor.hasLoadedValues, !editor.isLoading {
             VStack(alignment: .leading, spacing: 12) {
-                Toggle("Module enabled", isOn: $editor.draftEnabled)
-                    .toggleStyle(.checkbox).disabled(!editor.canEdit)
-                    .accessibilityIdentifier("advanced.enabled")
-                TextField("Instance label", text: Binding(
-                    get: { editor.draftName.advancedInstanceLabel },
-                    set: { text in
-                        if text != editor.draftName.advancedInstanceLabel { editor.draftName = text }
-                    }
-                ))
-                    .textFieldStyle(.roundedBorder).disabled(!editor.canEdit)
-                    .accessibilityIdentifier("advanced.name")
-                if !editor.nameIsValid {
-                    Text("Instance labels may contain at most 127 UTF-8 bytes.")
-                        .font(.caption).foregroundStyle(.red)
-                }
                 if schema.fields.isEmpty {
-                    Text("No scalar parameters are exposed for this operation.")
+                    Text("This adjustment has no supported numeric settings.")
                         .font(.callout).foregroundStyle(.secondary)
                 } else {
                     AdvancedModuleFields(
@@ -179,16 +194,13 @@ struct AdvancedModuleInspector: View {
                     )
                     .id(editor.editorRevision).disabled(!editor.canEdit)
                 }
-                draftActions
             }
         }
     }
 
     private var draftActions: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Button("Reset to Schema Defaults", action: editor.resetDefaults)
-                .disabled(!editor.canEdit || editor.resettableFields.isEmpty)
-                .accessibilityIdentifier("advanced.resetAll")
+            Text("Pending Changes").font(.callout.weight(.medium))
             HStack {
                 Button("Discard", action: editor.discard)
                     .disabled(!editor.canEdit || (!editor.hasChanges && editor.invalidFields.isEmpty))
@@ -201,22 +213,19 @@ struct AdvancedModuleInspector: View {
             }
             Text(
                 editor.invalidFields.isEmpty && editor.nameIsValid
-                    ? "Apply records one undoable adjustment." : "Correct invalid values before applying."
+                    ? "Apply adds one undo step. Then save the catalog to keep these edits."
+                    : "Correct invalid values before applying."
             )
             .font(.caption).foregroundStyle(.secondary)
-            if editor.hasChanges {
-                Text("Unapplied draft. Apply before switching modules.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
         }
     }
 
     private var supportNotice: some View {
-        DisclosureGroup("Engine Support") {
+        DisclosureGroup("Editing Support") {
             VStack(alignment: .leading, spacing: 6) {
-                Text("Values use the engine's native units; unit labels are unavailable.")
-                Text("Masks includes numeric geometry and supported blending. Curves, parametric masks, "
-                    + "canvas drawing and new instances are unavailable. Existing data is retained.")
+                Text("Unit labels are shown where verified; other values use darktable’s stored scale.")
+                Text("Use Masks for numeric mask geometry and supported blending. Curve editors, parametric masks, "
+                    + "mask drawing and new instances are unavailable. Existing edits are preserved.")
             }
             .padding(.top, 6)
         }
@@ -230,7 +239,7 @@ struct AdvancedModuleInspector: View {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(field.displayTitle).font(.callout)
                         if let bounds = field.boundsDescription { Text(bounds) }
-                        if let value = field.defaultValue { Text("Schema default \(field.displayText(for: value))") }
+                        if let value = field.defaultValue { Text("Default \(field.displayText(for: value))") }
                     }
                     .font(.caption).foregroundStyle(.secondary)
                 }

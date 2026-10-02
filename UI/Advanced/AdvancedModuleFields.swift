@@ -7,29 +7,25 @@ struct AdvancedModuleFields: View {
     var onSet: (String, ModuleParameterValue) -> Void
     var onValidity: (String, Bool) -> Void
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            fieldGroup("Values", fields: schema.fields.filter(\.isNumeric))
-            fieldGroup(
-                "Options", fields: schema.fields.filter { $0.kind == .bool || $0.kind == .enumeration })
-            fieldGroup("Retained Parameters", fields: schema.fields.filter { $0.kind == .other })
-            metadata
-        }
+    private var presentation: AdvancedFieldPresentation {
+        AdvancedFieldPresentation(schema: schema, values: values)
     }
 
-    @ViewBuilder
-    private func fieldGroup(_ title: String, fields: [ModuleParameterField]) -> some View {
-        if !fields.isEmpty {
-            VStack(alignment: .leading, spacing: 12) {
-                Text(title).font(.headline)
-                ForEach(fields) { field in
-                    if let value = values[field.name] {
-                        parameter(field, value: value)
-                    } else {
-                        readOnly(field, value: "Value unavailable")
-                    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            ForEach(presentation.fields) { field in
+                if let value = values[field.name] {
+                    parameter(field, value: value)
+                } else {
+                    readOnly(field, value: "Value unavailable")
                 }
             }
+            if presentation.automatic == true {
+                Text("Automatic metering requires a supported 16-bit RAW. Manual settings are retained.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            metadata
         }
     }
 
@@ -37,46 +33,50 @@ struct AdvancedModuleFields: View {
     private func parameter(_ field: ModuleParameterField, value: ModuleParameterValue) -> some View {
         if field.isNumeric, value.doubleValue != nil {
             AdvancedNumericField(
-                field: field, value: value,
+                field: field, value: value, unit: presentation.unit(for: field), title: presentation.title(for: field),
                 onSet: { onSet(field.name, $0) }, onValidity: { onValidity(field.name, $0) })
         } else if field.kind == .bool, case .boolean(let enabled) = value {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    Toggle(
-                        field.displayTitle,
-                        isOn: Binding(get: { enabled }, set: { onSet(field.name, .boolean($0)) })
-                    )
-                    .toggleStyle(.checkbox)
-                    .accessibilityIdentifier("advanced.value.\(field.name)")
-                    Spacer()
-                    reset(field, value: value)
-                }
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(presentation.title(for: field)).frame(maxWidth: .infinity, alignment: .leading)
+                Toggle(
+                    "",
+                    isOn: Binding(get: { enabled }, set: { onSet(field.name, .boolean($0)) })
+                )
+                .toggleStyle(.checkbox).labelsHidden().frame(width: 88, alignment: .trailing)
+                .accessibilityLabel(field.displayTitle)
+                .accessibilityIdentifier("advanced.value.\(field.name)")
+                Text("").frame(width: 24)
+                reset(field, value: value).frame(width: 16)
             }
+            .frame(minHeight: 24)
         } else if field.kind == .enumeration {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    Picker(
-                        field.displayTitle,
-                        selection: Binding(
-                            get: { field.choiceValue(for: value) },
-                            set: { selection in
-                                if let selection { onSet(field.name, .integer(selection)) }
-                            })
-                    ) {
-                        if field.choiceValue(for: value) == nil {
-                            Text("Retained value (\(value.entryText))").tag(nil as Int?)
-                        }
-                        ForEach(field.choices) { choice in
-                            Text(choice.title ?? choice.name).tag(Optional(choice.value))
-                        }
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(presentation.title(for: field)).frame(maxWidth: .infinity, alignment: .leading)
+                Picker(
+                    field.displayTitle,
+                    selection: Binding(
+                        get: { field.choiceValue(for: value) },
+                        set: { selection in
+                            if let selection { onSet(field.name, .integer(selection)) }
+                        })
+                ) {
+                    if field.choiceValue(for: value) == nil {
+                        Text("Retained value (\(value.entryText))").tag(nil as Int?)
                     }
-                    .pickerStyle(.menu).disabled(field.choices.isEmpty)
-                    .accessibilityIdentifier("advanced.value.\(field.name)")
-                    reset(field, value: value)
+                    ForEach(field.choices) { choice in
+                        let title = choice.title ?? choice.name
+                        Text(title.prefix(1).uppercased() + title.dropFirst()).tag(Optional(choice.value))
+                    }
                 }
+                .pickerStyle(.menu).labelsHidden().frame(width: 88, alignment: .trailing)
+                .disabled(field.choices.isEmpty).accessibilityLabel(field.displayTitle)
+                .accessibilityIdentifier("advanced.value.\(field.name)")
+                Text("").frame(width: 24)
+                reset(field, value: value).frame(width: 16)
             }
+            .frame(minHeight: 24)
         } else {
-            readOnly(field, value: value.entryText)
+            readOnly(field, value: field.displayText(for: value))
         }
     }
 
@@ -90,19 +90,25 @@ struct AdvancedModuleFields: View {
         }
         .buttonStyle(.borderless)
         .disabled(field.defaultValue.map { field.valuesEqual($0, value) } ?? true)
-        .help("Reset \(field.displayTitle) to the schema default")
+        .help("Reset \(field.displayTitle) to darktable’s declared default")
         .accessibilityLabel("Reset \(field.displayTitle)")
         .accessibilityIdentifier("advanced.reset.\(field.name)")
     }
 
     private var metadata: some View {
-        DisclosureGroup("Ranges & Defaults") {
+        DisclosureGroup("Limits & Defaults") {
             VStack(alignment: .leading, spacing: 10) {
                 ForEach(schema.fields) { field in
                     VStack(alignment: .leading, spacing: 3) {
                         Text(field.displayTitle).font(.callout)
                         if let bounds = field.boundsDescription { Text(bounds) }
-                        if let text = defaultText(field) { Text("Default \(text)") }
+                        if let text = defaultText(field) {
+                            Text("Default \(text)\(presentation.unit(for: field).map { " " + $0 } ?? "")")
+                        }
+                        if let value = values[field.name],
+                            AdvancedNumericPresentation(field: field).preservesFinerValue(value) {
+                            Text("The stored value is finer than hundredths and is preserved until edited.")
+                        }
                     }
                 }
             }
@@ -123,7 +129,7 @@ struct AdvancedModuleFields: View {
         VStack(alignment: .leading, spacing: 5) {
             Text(field.displayTitle).font(.body)
             Text(value).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-            Text("This parameter cannot be edited with the current schema.")
+            Text("This setting is preserved; its editor is unavailable.")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }

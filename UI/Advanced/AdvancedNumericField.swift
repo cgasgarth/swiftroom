@@ -4,6 +4,8 @@ import SwiftUI
 struct AdvancedNumericField: View {
     let field: ModuleParameterField
     let value: ModuleParameterValue
+    var unit: String?
+    var title: String?
     var onSet: (ModuleParameterValue) -> Void
     var onValidity: (Bool) -> Void
     @State private var draft = ""
@@ -11,24 +13,32 @@ struct AdvancedNumericField: View {
     @State private var didEdit = false
     @FocusState private var isFocused: Bool
 
+    private var presentation: AdvancedNumericPresentation {
+        AdvancedNumericPresentation(field: field, unit: unit)
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(field.displayTitle).font(.body)
-                Spacer(minLength: 4)
+                Text(title ?? field.displayTitle).font(.body).frame(maxWidth: .infinity, alignment: .leading)
                 TextField(field.displayTitle, text: Binding(get: { draft }, set: editDraft))
                     .textFieldStyle(.roundedBorder)
                     .multilineTextAlignment(.trailing)
                     .monospacedDigit()
-                    .frame(width: 116)
+                    .frame(width: 88)
                     .focused($isFocused)
                     .onSubmit(commit)
                     .onExitCommand(perform: discard)
                     .accessibilityIdentifier("advanced.value.\(field.name)")
-                    .accessibilityLabel("\(field.displayTitle), exact value")
-                    .help("Exact value: \(value.entryText)")
-                resetButton
+                    .accessibilityLabel("\(field.displayTitle), value")
+                    .help(presentation.preservesFinerValue(value)
+                        ? "This stored value is finer than hundredths. It is preserved until you edit."
+                        : "Enter up to two decimal places in the displayed unit.")
+                Text(unit ?? "").font(.caption).foregroundStyle(.secondary)
+                    .frame(width: 24, alignment: .leading)
+                resetButton.frame(width: 16)
             }
+            .frame(minHeight: 24)
             if let range = field.sliderRange(for: value) {
                 slider(range)
             }
@@ -38,18 +48,23 @@ struct AdvancedNumericField: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .onAppear { draft = field.displayText(for: value) }
+        .onAppear { draft = presentation.text(for: value) }
         .onChange(of: value) { _, updated in
-            if !isFocused, validationMessage == nil { draft = field.displayText(for: updated) }
+            if !isFocused, validationMessage == nil { draft = presentation.text(for: updated) }
+        }
+        .onChange(of: draft) { _, text in
+            let capped = presentation.cappedEntry(text)
+            if capped != text { draft = capped }
         }
         .onChange(of: isFocused) { _, focused in
             if focused {
-                if validationMessage == nil { draft = value.entryText }
+                if validationMessage == nil { draft = presentation.text(for: value) }
                 didEdit = false
             } else {
                 commit()
             }
         }
+        .onDisappear { onValidity(true) }
     }
 
     private func slider(_ range: ClosedRange<Double>) -> some View {
@@ -62,6 +77,7 @@ struct AdvancedNumericField: View {
             }
         }
         .accessibilityLabel(field.displayTitle)
+        .accessibilityValue(presentation.text(for: value) + (unit.map { " " + $0 } ?? ""))
         .accessibilityIdentifier("advanced.slider.\(field.name)")
     }
 
@@ -70,7 +86,7 @@ struct AdvancedNumericField: View {
             guard let defaultValue = field.defaultValue, field.accepts(defaultValue) else { return }
             isFocused = false
             didEdit = false
-            draft = field.displayText(for: defaultValue)
+            draft = presentation.text(for: defaultValue)
             validationMessage = nil
             onValidity(true)
             onSet(defaultValue)
@@ -79,62 +95,56 @@ struct AdvancedNumericField: View {
         }
         .buttonStyle(.borderless)
         .disabled(field.defaultValue.map { field.valuesEqual($0, value) } ?? true)
-        .help("Reset \(field.displayTitle) to the schema default")
+        .help("Reset \(field.displayTitle) to darktable’s declared default")
         .accessibilityLabel("Reset \(field.displayTitle)")
         .accessibilityIdentifier("advanced.reset.\(field.name)")
     }
 
     private func editDraft(_ text: String) {
+        guard text != draft else { return }
         draft = text
         didEdit = true
         validateDraft()
     }
 
     private func updateSlider(_ number: Double) {
-        let updated: ModuleParameterValue
-        if field.isInteger {
-            guard let integer = Int(exactly: number.rounded()) else { return }
-            updated = .integer(integer)
-        } else {
-            updated = .number(number)
-        }
-        guard field.accepts(updated) else { return }
+        guard let updated = presentation.roundedValue(number) else { return }
         didEdit = false
-        draft = isFocused ? updated.entryText : field.displayText(for: updated)
+        draft = presentation.text(for: updated)
         validationMessage = nil
         onValidity(true)
         onSet(updated)
     }
 
     private func validateDraft() {
-        let parsed = field.parsedValue(draft)
+        let parsed = presentation.parsedValue(presentation.cappedEntry(draft))
         let valid = parsed != nil
         validationMessage =
             valid
-            ? nil : field.boundsDescription ?? "Enter a finite \(field.isInteger ? "integer" : "number")."
+            ? nil : "Use a valid \(field.isInteger ? "integer" : "number with at most two decimal places")."
         onValidity(valid)
         if let parsed { onSet(parsed) }
     }
 
     private func commit() {
         guard didEdit else {
-            if validationMessage == nil { draft = isFocused ? value.entryText : field.displayText(for: value) }
+            if validationMessage == nil { draft = presentation.text(for: value) }
             return
         }
-        guard let updated = field.parsedValue(draft) else {
+        guard let updated = presentation.parsedValue(draft) else {
             validateDraft()
             return
         }
         onSet(updated)
         didEdit = false
-        draft = isFocused ? updated.entryText : field.displayText(for: updated)
+        draft = presentation.text(for: updated)
         validationMessage = nil
         onValidity(true)
     }
 
     private func discard() {
         didEdit = false
-        draft = field.displayText(for: value)
+        draft = presentation.text(for: value)
         validationMessage = nil
         onValidity(true)
         isFocused = false

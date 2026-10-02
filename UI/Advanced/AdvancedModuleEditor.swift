@@ -190,6 +190,8 @@ final class AdvancedModuleEditor: ObservableObject {
         updated.enabled = draftEnabled
         updated.name = draftName == (module.name ?? "") ? module.name : draftName
         let edits = expectedEdits
+        let title = selectedDescriptor?.title ?? module.operation
+        let label = title.prefix(1).uppercased() + title.dropFirst()
         let catalogURL = expectedCatalogURL
         let ticket = UUID()
         applyTicket = ticket
@@ -203,7 +205,7 @@ final class AdvancedModuleEditor: ObservableObject {
                 let applied = try await store.commitCurrentModule(
                     assetID: assetID, catalogID: catalogID,
                     expectedEdits: edits, module: updated, values: changes,
-                    label: selectedDescriptor?.title ?? module.operation)
+                    label: label)
                 try Task.checkCancellation()
                 guard applyTicket == ticket, matchesContext else { return }
                 guard applied else {
@@ -212,7 +214,7 @@ final class AdvancedModuleEditor: ObservableObject {
                     return
                 }
                 reloadSelection()
-                statusMessage = "Applied. Undo restores the previous module state."
+                statusMessage = "Changes applied."
             } catch is CancellationError {
                 if applyTicket == ticket { reloadSelection() }
             } catch {

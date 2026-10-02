@@ -2,7 +2,7 @@ import Foundation
 
 extension ModuleParameterField {
     var displayTitle: String {
-        if let title, !title.isEmpty { return title }
+        if let title, !title.isEmpty { return title.prefix(1).uppercased() + title.dropFirst() }
         return name.replacingOccurrences(of: "_", with: " ").capitalized
     }
 
@@ -27,8 +27,9 @@ extension ModuleParameterField {
     }
 
     func displayText(for value: ModuleParameterValue) -> String {
-        guard case .number(let number) = value else { return value.entryText }
-        return String(format: "%.*g", locale: Locale(identifier: "en_US_POSIX"), kind == .float ? 7 : 10, number)
+        guard case .number = value else { return value.entryText }
+        let presentation = AdvancedNumericPresentation(field: self)
+        return presentation.text(for: value)
     }
 
     func accepts(_ value: ModuleParameterValue) -> Bool {
@@ -55,6 +56,9 @@ extension ModuleParameterField {
     }
 
     func valuesEqual(_ lhs: ModuleParameterValue, _ rhs: ModuleParameterValue) -> Bool {
+        if kind == .float, let left = lhs.doubleValue, let right = rhs.doubleValue {
+            return Float(left) == Float(right)
+        }
         if isNumeric { return lhs.doubleValue != nil && lhs.doubleValue == rhs.doubleValue }
         if kind == .enumeration, let left = choiceValue(for: lhs), let right = choiceValue(for: rhs) {
             return left == right
