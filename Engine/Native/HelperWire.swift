@@ -15,6 +15,7 @@ struct HelperWireRequest: Encodable, Sendable {
     var colorSpace: String
     var maximumDimension: Int
     var quality: Int
+    var maskEdit: MaskWireEdit?
 }
 
 struct HelperWireResponse: Decodable, Sendable {
@@ -24,6 +25,7 @@ struct HelperWireResponse: Decodable, Sendable {
     var darktableXMP: Data
     var modules: [HelperWireModule]
     var outputICC: Data?
+    var maskState: MaskWireState
 }
 
 struct HelperWireModule: Decodable, Sendable {

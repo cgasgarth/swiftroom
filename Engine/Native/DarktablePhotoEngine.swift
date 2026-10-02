@@ -104,9 +104,10 @@ actor DarktablePhotoEngine: PhotoEngine {
         )
     }
 
-    private func execute(
+    func execute(
         sourceURL: URL, edits: EditState, maximumDimension: Int, command: String,
-        format: ExportFormat = .png, colorSpace: ExportColorSpace = .sRGB, quality: Double = 0.95
+        format: ExportFormat = .png, colorSpace: ExportColorSpace = .sRGB, quality: Double = 0.95,
+        maskEdit: MaskWireEdit? = nil
     ) async throws -> HelperExecutionResult {
         guard let runtime else {
             throw PhotoEngineError.unavailable(runtimeFailure)
@@ -137,7 +138,7 @@ actor DarktablePhotoEngine: PhotoEngine {
                 source: source.path, xmp: xmp == nil ? nil : history.path, edits: orderedEdits,
                 destination: output.path, format: format == .jpeg ? "jpeg" : format.rawValue,
                 colorSpace: colorSpace.rawValue, maximumDimension: max(0, maximumDimension),
-                quality: max(1, Int((min(1, max(0, quality)) * 100).rounded()))
+                quality: max(1, Int((min(1, max(0, quality)) * 100).rounded())), maskEdit: maskEdit
             )
             let request = directory.appendingPathComponent("request.json")
             let response = directory.appendingPathComponent("response.json")

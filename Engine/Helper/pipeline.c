@@ -7,6 +7,7 @@
 #include "develop/blend.h"
 #include "imageio/imageio_common.h"
 #include "imageio/imageio_module.h"
+#include "Masks/masks.h"
 
 static double number(JsonObject *object, const char *key, double fallback)
 {
@@ -179,6 +180,7 @@ static char *response(dt_develop_t *dev, const char *xmp, int width, int height,
     json_builder_end_object(builder);
   }
   json_builder_end_array(builder);
+  np_masks_state(builder, dev);
   json_builder_end_object(builder);
   JsonNode *root = json_builder_get_root(builder);
   JsonGenerator *generator = json_generator_new();
@@ -214,6 +216,8 @@ char *np_pipeline(JsonObject *request, gboolean prepare, char **err)
   dt_dev_pop_history_items_ext(&dev, dev.history_end);
   JsonObject *edits = json_object_get_object_member(request, "edits");
   if(edits && !apply_adjustments(&dev, edits, err)) { dt_dev_cleanup(&dev); return NULL; }
+  JsonObject *mask_edit = np_mask_object(request, "maskEdit");
+  if(mask_edit && !np_masks_apply(&dev, mask_edit, err)) { dt_dev_cleanup(&dev); return NULL; }
   dt_dev_write_history_ext(&dev, imgid);
   int width = dev.image_storage.width, height = dev.image_storage.height;
   cmsHPROFILE output_profile = NULL;

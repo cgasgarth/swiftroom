@@ -11,6 +11,17 @@ struct BlendMaskMode: OptionSet, Codable, Equatable, Sendable {
     static let drawn = Self(rawValue: 2)
     static let parametric = Self(rawValue: 4)
     static let raster = Self(rawValue: 8)
+
+    init(rawValue: UInt32) { self.rawValue = rawValue }
+
+    init(from decoder: any Decoder) throws {
+        rawValue = try decoder.singleValueContainer().decode(UInt32.self)
+    }
+
+    func encode(to encoder: any Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
 }
 
 struct BlendState: Codable, Equatable, Sendable {
