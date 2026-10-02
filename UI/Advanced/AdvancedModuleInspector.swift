@@ -176,7 +176,7 @@ struct AdvancedModuleInspector: View {
 
     private var draftActions: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Button("Reset Parameters to Defaults", action: editor.resetDefaults)
+            Button("Reset to Schema Defaults", action: editor.resetDefaults)
                 .disabled(!editor.canEdit || editor.resettableFields.isEmpty)
                 .accessibilityIdentifier("advanced.resetAll")
             HStack {
