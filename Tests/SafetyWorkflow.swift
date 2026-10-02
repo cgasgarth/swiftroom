@@ -102,8 +102,8 @@ enum SafetyWorkflow {
         try requireWorkflow(try Data(contentsOf: copyXMP) == data, "Symlink XMP copy lost full bytes.")
         try FileManager.default.removeItem(at: symbolic)
         try FileManager.default.removeItem(at: symbolicXMP)
+        try protectLinkedOriginal(store: store, document: document, fixture: fixture, sidecar: xmp)
         try FileManager.default.removeItem(at: xmp)
-        try protectLinkedOriginal(store: store, document: document, fixture: fixture)
         store.retryRender()
         await store.waitForRender()
         try requireWorkflow(store.preview?.assetID == document.id, "Removing input aliases broke the catalog copy.")
@@ -120,7 +120,9 @@ enum SafetyWorkflow {
         print("PASS symlink RAW/adjacent XMP materialized as regular files; external catalog links rejected")
     }
 
-    private static func protectLinkedOriginal(store: EditorStore, document: PhotoDocument, fixture: URL) throws {
+    private static func protectLinkedOriginal(
+        store: EditorStore, document: PhotoDocument, fixture: URL, sidecar: URL
+    ) throws {
         try requireWorkflow(document.originalSourcePath == fixture.resolvingSymlinksInPath().standardizedFileURL.path,
                             "Linked import did not retain the resolved original source path.")
         let authorization = try ExportOverwriteAuthorization.capture(destination: fixture)
@@ -128,6 +130,14 @@ enum SafetyWorkflow {
             _ = try store.makeExportRequest(destination: fixture, format: .png, colorSpace: .sRGB,
                 quality: 0.95, maximumDimension: 1600, overwriteAuthorization: authorization)
             throw WorkflowFailure("Removing the import symlink allowed replacement of the source original.")
+        } catch PhotoEngineError.unsupported { }
+        try requireWorkflow(document.originalSidecarPath == sidecar.resolvingSymlinksInPath().standardizedFileURL.path,
+                            "Linked import discarded the actual selected sidecar provenance.")
+        let sidecarAuthorization = try ExportOverwriteAuthorization.capture(destination: sidecar)
+        do {
+            _ = try store.makeExportRequest(destination: sidecar, format: .png, colorSpace: .sRGB,
+                quality: 0.95, maximumDimension: 1600, overwriteAuthorization: sidecarAuthorization)
+            throw WorkflowFailure("Removing the sidecar alias allowed replacement of its separately named target.")
         } catch PhotoEngineError.unsupported { }
         for destination in [URL(fileURLWithPath: fixture.path + ".xmp"),
                             fixture.deletingPathExtension().appendingPathExtension("xmp")] {

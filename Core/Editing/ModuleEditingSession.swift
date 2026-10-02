@@ -12,7 +12,6 @@ final class ModuleEditingSession {
     let label: String
     var expectedEdits: EditState
     var expectedRevision: UInt64
-    var expectedGeneration: UInt64
     var prepared: EditState?
     var requestID = UUID()
     var task: Task<ModuleEditingResult, Error>?
@@ -25,7 +24,6 @@ final class ModuleEditingSession {
         baseline = document.edits
         expectedEdits = document.edits
         expectedRevision = store.editRevision
-        expectedGeneration = 0
         self.moduleID = moduleID
         self.label = label
     }

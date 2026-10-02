@@ -93,10 +93,10 @@ enum ModuleEditingWorkflow {
                                                  values: ["exposure": .number(3.25)])
         }
         for _ in 0..<1000 {
-            if store.isUpdatingEdits { break }
+            if store.isProcessingEdits { break }
             await Task.yield()
         }
-        try requireWorkflow(store.isUpdatingEdits, "Stale test did not start real adjustment work.")
+        try requireWorkflow(store.isProcessingEdits, "Stale test did not start real adjustment work.")
         try requireWorkflow(!store.prepareToClose(.save), "Closing did not block pending adjustment work.")
         store.selectAsset(other.id)
         do {

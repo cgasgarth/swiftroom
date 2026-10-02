@@ -20,6 +20,7 @@ struct PhotoDocument: Codable, Equatable, Identifiable, Sendable {
     var rating: Int = 0
     var isRejected: Bool = false
     var importedAt: Date = Date()
+    var originalSidecarPath: String?
 
     var isDirty: Bool { edits != savedEdits }
     var canUndo: Bool { historyIndex > 0 }
@@ -131,11 +132,18 @@ struct CatalogRepository: Sendable {
     }
 
     func copyOriginal(from source: URL, id: UUID, resolvedSourceURL: URL? = nil) throws -> String {
+        try copyImportedOriginal(from: source, id: id, resolvedSourceURL: resolvedSourceURL).relativePath
+    }
+
+    func copyImportedOriginal(
+        from source: URL, id: UUID, resolvedSourceURL: URL? = nil
+    ) throws -> ImportedOriginalCopy {
         let directory = rootURL.appendingPathComponent("Originals/\(id.uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let destination = directory.appendingPathComponent(source.lastPathComponent)
+        let resolvedSource = resolvedSourceURL ?? source.resolvingSymlinksInPath().standardizedFileURL
+        var originalSidecarPath: String?
         do {
-            let resolvedSource = resolvedSourceURL ?? source.resolvingSymlinksInPath().standardizedFileURL
             try copyRegularFile(from: resolvedSource, to: destination)
             let sidecarCandidates = [
                 URL(fileURLWithPath: source.path + ".xmp"),
@@ -144,14 +152,17 @@ struct CatalogRepository: Sendable {
                 resolvedSource.deletingPathExtension().appendingPathExtension("xmp")
             ]
             if let sidecar = sidecarCandidates.first(where: { FileManager.default.fileExists(atPath: $0.path) }) {
-                try copyRegularFile(from: sidecar.resolvingSymlinksInPath(),
+                let resolvedSidecar = sidecar.resolvingSymlinksInPath().standardizedFileURL
+                try copyRegularFile(from: resolvedSidecar,
                                     to: URL(fileURLWithPath: destination.path + ".xmp"))
+                originalSidecarPath = resolvedSidecar.path
             }
         } catch {
             try? FileManager.default.removeItem(at: directory)
             throw error
         }
-        return "Originals/\(id.uuidString)/\(source.lastPathComponent)"
+        return ImportedOriginalCopy(relativePath: "Originals/\(id.uuidString)/\(source.lastPathComponent)",
+                                    originalSourcePath: resolvedSource.path, originalSidecarPath: originalSidecarPath)
     }
 
     private func copyRegularFile(from source: URL, to destination: URL) throws {
@@ -161,6 +172,12 @@ struct CatalogRepository: Sendable {
         }
         try FileManager.default.copyItem(at: source, to: destination)
     }
+}
+
+struct ImportedOriginalCopy: Sendable {
+    let relativePath: String
+    let originalSourcePath: String
+    let originalSidecarPath: String?
 }
 
 private struct CatalogHeader: Decodable {

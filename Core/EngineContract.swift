@@ -67,6 +67,7 @@ struct RenderedPhoto: Sendable {
     var pixelHeight: Int
     var colorSpaceName: String
     var engineRevision: String
+    var isFullResolution: Bool = false
 }
 
 enum ExportFormat: String, Codable, CaseIterable, Sendable {

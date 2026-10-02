@@ -33,7 +33,8 @@ final class EditorStore: ObservableObject {
     var selectedDocument: PhotoDocument? { documents.first { $0.id == selectedAssetID } }
     var canUndo: Bool { selectedDocument?.canUndo ?? false }
     var canRedo: Bool { selectedDocument?.canRedo ?? false }
-    var isUpdatingEdits: Bool { editWorkCount > 0 }
+    var isProcessingEdits: Bool { editWorkCount > 0 }
+    var isUpdatingEdits: Bool { isProcessingEdits || moduleEditingSession != nil }
     var history: [HistoryEntry] { selectedDocument?.history ?? [] }
     var currentEdits: EditState { selectedDocument?.edits ?? .original }
     var exposureEV: Double { currentEdits.exposureEV }
@@ -44,6 +45,7 @@ final class EditorStore: ObservableObject {
     var thumbnailURLs: [UUID: URL] { thumbnailService.urls }
     var thumbnailErrors: [UUID: String] { thumbnailService.errors }
     var thumbnailGeneration: UInt64 { thumbnailService.generation }
+    var isFullResolutionPreview: Bool { preview?.isFullResolution == true }
 
     private var repository: CatalogRepository
     private var catalog: PhotoCatalog
@@ -51,7 +53,7 @@ final class EditorStore: ObservableObject {
     private var generation: UInt64 = 0
     private var editGestureAssetID: UUID?
     private var editGestureLabel: String?
-    private var moduleEditingSession: ModuleEditingSession?
+    @Published private var moduleEditingSession: ModuleEditingSession?
     private var previewMaximumDimension = 2560
     private var retiredPreviews: [URL: RenderedPhoto] = [:]
     private var previewCleanup: Task<Void, Never>?
@@ -134,9 +136,10 @@ extension EditorStore {
             do {
                 let id = UUID()
                 let originalSourceURL = url.resolvingSymlinksInPath().standardizedFileURL
-                let relative = try await Task.detached(priority: .userInitiated) {
-                    try importRepository.copyOriginal(from: url, id: id, resolvedSourceURL: originalSourceURL)
+                let imported = try await Task.detached(priority: .userInitiated) {
+                    try importRepository.copyImportedOriginal(from: url, id: id, resolvedSourceURL: originalSourceURL)
                 }.value
+                let relative = imported.relativePath
                 let copiedURL = importCatalogURL.appendingPathComponent(relative)
                 let prepared: PreparedPhoto
                 do { prepared = try await engine.prepare(sourceURL: copiedURL, edits: .original) } catch {
@@ -148,10 +151,10 @@ extension EditorStore {
                     throw CatalogError.invalid("The catalog changed during import.")
                 }
                 let document = PhotoDocument(id: id, fileName: url.lastPathComponent,
-                    originalSourcePath: originalSourceURL.path, relativeOriginalPath: relative,
+                    originalSourcePath: imported.originalSourcePath, relativeOriginalPath: relative,
                     metadata: prepared.metadata, edits: prepared.edits,
                     history: [HistoryEntry(label: "Original", edits: prepared.edits)],
-                    historyIndex: 0, savedEdits: prepared.edits)
+                    historyIndex: 0, savedEdits: prepared.edits, originalSidecarPath: imported.originalSidecarPath)
                 documents.append(document)
                 importedIDs.append(id)
                 hasUnsavedChanges = true
@@ -236,20 +239,24 @@ extension EditorStore {
         let source = try repository.sourceURL(for: document)
         let baseline = currentEdits
         let revision = editRevision
-        let startingGeneration = generation
         let startingCatalogID = catalogID
         let startingCatalogURL = catalogURL
+        var effective = baseline
+        if !baseline.modules.contains(where: { $0.operation == "temperature" && $0.instance == 0 }) {
+            effective = try await engine.prepare(sourceURL: source, edits: baseline).edits
+        }
         let camera = try await CameraWhiteBalance.prepare(engine: engine, sourceURL: source,
                                                         cacheURL: repository.cacheURL)
         try Task.checkCancellation()
         guard selectedAssetID == document.id, catalogID == startingCatalogID, catalogURL == startingCatalogURL,
-              currentEdits == baseline, editRevision == revision, generation == startingGeneration else { return false }
+              currentEdits == baseline, editRevision == revision else { return false }
         guard let cameraModule = camera.modules.first(where: { $0.operation == "temperature" && $0.instance == 0 }),
-              let index = baseline.modules.firstIndex(where: { $0.operation == "temperature" && $0.instance == 0 }),
-              baseline.modules[index].version == cameraModule.version else {
+              let index = effective.modules.firstIndex(where: { $0.operation == "temperature" && $0.instance == 0 }),
+              effective.modules[index].version == cameraModule.version else {
             throw PhotoEngineError.unsupported("This photo has no compatible camera white-balance state.")
         }
         updateEdits(label: "As-shot white balance") {
+            $0 = effective
             $0.temperature = nil
             $0.tint = 0
             $0.modules[index].parameters = cameraModule.parameters
@@ -279,7 +286,7 @@ extension EditorStore {
         guard let document = selectedDocument else { return false }
         editWorkCount += 1
         defer { editWorkCount -= 1 }
-        let startingGeneration = generation
+        let startingRevision = editRevision
         let startingCatalogURL = self.catalogURL
         let source = try repository.sourceURL(for: document)
         var prepared = expectedEdits
@@ -297,7 +304,7 @@ extension EditorStore {
         prepared.modules[index].enabled = module.enabled
         try Task.checkCancellation()
         guard self.catalogID == catalogID, selectedAssetID == assetID, currentEdits == expectedEdits,
-              generation == startingGeneration, self.catalogURL == startingCatalogURL else { return false }
+              editRevision == startingRevision, self.catalogURL == startingCatalogURL else { return false }
         endEditing()
         updateEdits(label: label) { $0 = prepared }
         return true
@@ -501,9 +508,10 @@ extension EditorStore {
         }
         let sources = try documents.flatMap { document in
             let original = URL(fileURLWithPath: document.originalSourcePath)
+            let sidecars = document.originalSidecarPath.map { [URL(fileURLWithPath: $0)] } ?? []
             return [try repository.sourceURL(for: document), original,
                     URL(fileURLWithPath: original.path + ".xmp"),
-                    original.deletingPathExtension().appendingPathExtension("xmp")]
+                    original.deletingPathExtension().appendingPathExtension("xmp")] + sidecars
         }
         let request = ExportRequest(
             assetID: document.id, sourceURL: try repository.sourceURL(for: document), edits: document.edits,
@@ -553,9 +561,8 @@ extension EditorStore {
         renderSelectedAtFullResolution()
     }
     func renderSelectedAtFullResolution() {
-        guard capabilities.supportsFullResolutionExport, let document = selectedDocument else { return }
-        let dimension = max(document.metadata.pixelWidth, document.metadata.pixelHeight)
-        previewMaximumDimension = dimension > 0 ? dimension : 0
+        guard capabilities.supportsFullResolutionExport, selectedDocument != nil else { return }
+        previewMaximumDimension = 0
         requestRender(immediate: true)
     }
     func zoomIn() { zoom = min(8, zoom == 0 ? 1 : zoom * 1.25) }
@@ -602,7 +609,8 @@ extension EditorStore {
                 do {
                     if !immediate { try await Task.sleep(for: .milliseconds(180)) }
                     try Task.checkCancellation()
-                    let result = try await engine.render(request)
+                    var result = try await engine.render(request)
+                    result.isFullResolution = request.maximumDimension == 0
                     guard !Task.isCancelled, let self, self.selectedAssetID == result.assetID,
                           self.generation == result.generation else {
                         await engine.release(result)
@@ -637,7 +645,6 @@ extension EditorStore {
         do {
             let session = try ModuleEditingSession(document: document, store: self, moduleID: moduleID, label: label)
             beginEditing(label)
-            session.expectedGeneration = generation
             moduleEditingSession = session
             return session.id
         } catch { reportError(error.localizedDescription); return nil }
@@ -690,7 +697,6 @@ extension EditorStore {
         updateEdits(label: session.label, moduleEditingID: editingID) { $0 = result.edits }
         session.expectedEdits = currentEdits
         session.expectedRevision = editRevision
-        session.expectedGeneration = generation
         return true
     }
 
@@ -713,6 +719,5 @@ extension EditorStore {
     private func moduleSessionIsCurrent(_ session: ModuleEditingSession) -> Bool {
         selectedAssetID == session.assetID && catalogID == session.catalogID && catalogURL == session.catalogURL
             && currentEdits == session.expectedEdits && editRevision == session.expectedRevision
-            && generation == session.expectedGeneration
     }
 }

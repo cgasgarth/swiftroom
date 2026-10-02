@@ -24,6 +24,7 @@ enum CatalogWorkflow {
             try await WorkflowSteps.switchPhotos(store: reopened, baseline: baseline, fixture: fixture)
             try await WorkflowSteps.export(store: reopened, baseline: baseline, fixture: fixture, output: output)
             try await ModuleEditingWorkflow.verify(store: reopened)
+            try await EditingRegressionWorkflow.verify(store: reopened)
             try await SafetyWorkflow.verify(store: reopened, fixture: fixture, output: output)
             try await PreviewWorkflow.verify(store: reopened, output: output)
             print("INTEGRATION PASS \(output.path)")
