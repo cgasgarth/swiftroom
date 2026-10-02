@@ -46,6 +46,7 @@
             try await verifyExposure(
                 editor: editor, store: store, document: document, baselineDigest: baselineDigest)
             try await persistence(editor: editor, store: store, baselineDigest: baselineDigest)
+            try await basicFolding(editor: editor, store: store)
             try await options(editor: editor, store: store, engine: engine)
             try await integerEntry(editor: editor, store: store)
             try await switching(editor: editor, store: store, fixture: fixture, firstID: document.id)
@@ -140,6 +141,38 @@
     }
 
     extension AdvancedModuleWorkflow {
+        @MainActor
+        private static func basicFolding(editor: AdvancedModuleEditor, store: EditorStore) async throws {
+            guard let before = editor.values["exposure"]?.doubleValue else {
+                throw AdvancedWorkflowFailure(message: "Missing exposure before basic adjustment.")
+            }
+            store.setExposure(0.25)
+            await store.waitForRender()
+            guard let frame = store.preview else {
+                throw AdvancedWorkflowFailure(message: "Basic exposure did not render.")
+            }
+            let expectedPixels = try pixels(frame.imageURL)
+            editor.synchronize()
+            await editor.waitForLoad()
+            let actual = editor.values["exposure"]?.doubleValue ?? .infinity
+            try require(abs(actual - before - 0.25) < 0.000_001,
+                "Advanced editor did not display effective basic exposure.")
+            let count = store.history.count
+            editor.draftName = "Folded basic exposure"
+            editor.apply()
+            await editor.waitForApply()
+            await editor.waitForLoad()
+            await store.waitForRender()
+            guard let folded = store.preview else {
+                throw AdvancedWorkflowFailure(message: "Folded exposure did not render.")
+            }
+            try require(store.exposureEV == 0, "Advanced commit retained an applied basic delta.")
+            try require(store.history.count == count + 1, "Basic folding created extra history steps.")
+            try require(try pixels(folded.imageURL) == expectedPixels,
+                "Folding basic exposure changed developed pixels.")
+            print("PASS effective advanced values and pixel-exact basic exposure folding")
+        }
+
         @MainActor
         private static func options(
             editor: AdvancedModuleEditor, store: EditorStore, engine: any PhotoEngine
