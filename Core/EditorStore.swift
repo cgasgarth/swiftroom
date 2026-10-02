@@ -8,6 +8,8 @@ final class EditorStore: ObservableObject {
     @Published private(set) var documents: [PhotoDocument] = []
     @Published private(set) var selectedAssetID: UUID?
     @Published private(set) var preview: RenderedPhoto?
+    @Published private(set) var cachedPreviews: [UUID: RenderedPhoto] = [:]
+    @Published private(set) var editRevision: UInt64 = 0
     @Published private(set) var isRendering = false
     @Published private(set) var isImporting = false
     @Published private(set) var isExporting = false
@@ -37,6 +39,9 @@ final class EditorStore: ObservableObject {
     var tint: Double { currentEdits.tint }
     var catalogName: String { catalogURL.lastPathComponent.replacingOccurrences(of: ".nativephotocatalog", with: "") }
     var catalogID: UUID { catalog.id }
+    var thumbnailURLs: [UUID: URL] { thumbnailService.urls }
+    var thumbnailErrors: [UUID: String] { thumbnailService.errors }
+    var thumbnailGeneration: UInt64 { thumbnailService.generation }
 
     private var repository: CatalogRepository
     private var catalog: PhotoCatalog
@@ -45,6 +50,14 @@ final class EditorStore: ObservableObject {
     private var editGestureAssetID: UUID?
     private var editGestureLabel: String?
     private var previewMaximumDimension = 2560
+    private var retiredPreviews: [URL: RenderedPhoto] = [:]
+    private var previewCleanup: Task<Void, Never>?
+    private var thumbnailChange: AnyCancellable?
+    private lazy var thumbnailService: PhotoThumbnailService = {
+        let service = PhotoThumbnailService(store: self)
+        thumbnailChange = service.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
+        return service
+    }()
 
     init(engine: any PhotoEngine, catalogURL: URL) throws {
         self.engine = engine
@@ -63,6 +76,31 @@ final class EditorStore: ObservableObject {
 
     func clearError() { errorMessage = nil }
     func reportError(_ message: String) { errorMessage = message; statusMessage = "Needs attention" }
+    func requestThumbnail(_ assetID: UUID) async { await thumbnailService.request(assetID) }
+    func retryThumbnail(_ assetID: UUID) { thumbnailService.retry(assetID) }
+    func waitForThumbnails() async { await thumbnailService.waitUntilIdle() }
+    func waitForPreviewCleanup() async { await previewCleanup?.value }
+
+    func previewDidPresent(_ url: URL) {
+        guard preview?.imageURL == url else { return }
+        releaseRetiredPreviews()
+    }
+
+    func previewDidClear() {
+        guard preview == nil else { return }
+        releaseRetiredPreviews()
+    }
+
+    private func releaseRetiredPreviews() {
+        let retainedURLs = Set(cachedPreviews.values.map(\.imageURL))
+        let released = retiredPreviews.values.filter { !retainedURLs.contains($0.imageURL) }
+        for photo in released { retiredPreviews[photo.imageURL] = nil }
+        let previousCleanup = previewCleanup
+        previewCleanup = Task { [engine] in
+            await previousCleanup?.value
+            for photo in released { await engine.release(photo) }
+        }
+    }
 }
 
 extension EditorStore {
@@ -128,7 +166,8 @@ extension EditorStore {
         guard selectedAssetID != id else { if preview == nil { requestRender(immediate: true) }; return }
         renderTask?.cancel()
         selectedAssetID = id
-        preview = nil
+        editRevision &+= 1
+        preview = cachedPreviews[id]
         previewMaximumDimension = 2560
         zoom = 0
         errorMessage = nil
@@ -152,7 +191,9 @@ extension EditorStore {
         guard let id = editGestureAssetID, let index = documents.firstIndex(where: { $0.id == id }) else {
             editGestureAssetID = nil; editGestureLabel = nil; return
         }
+        let previousHistory = documents[index].history
         documents[index].commit(documents[index].edits, label: editGestureLabel ?? "Adjust photo")
+        if documents[index].history != previousHistory { editRevision &+= 1 }
         editGestureAssetID = nil
         editGestureLabel = nil
         refreshDirtyState()
@@ -220,6 +261,50 @@ extension EditorStore {
         return true
     }
 
+    func currentMaskState() async throws -> MaskState {
+        guard let maskEngine = engine as? any MaskEditingEngine, let document = selectedDocument else {
+            throw PhotoEngineError.unsupported("Choose a photo with an engine that supports mask editing.")
+        }
+        let startingCatalogID = catalogID
+        let startingCatalogURL = catalogURL
+        let startingGeneration = generation
+        let startingRevision = editRevision
+        let result = try await maskEngine.maskState(
+            sourceURL: try repository.sourceURL(for: document), edits: document.edits)
+        try Task.checkCancellation()
+        guard catalogID == startingCatalogID, catalogURL == startingCatalogURL,
+              selectedAssetID == document.id, currentEdits == document.edits,
+              generation == startingGeneration, editRevision == startingRevision else { throw CancellationError() }
+        return result
+    }
+
+    func commitCurrentMasks(
+        assetID: UUID, catalogID: UUID, expectedEdits: EditState, expectedRevision: UInt64,
+        edit: MaskEdit, label: String
+    ) async throws -> Bool {
+        guard let maskEngine = engine as? any MaskEditingEngine, self.catalogID == catalogID,
+              selectedAssetID == assetID, currentEdits == expectedEdits, editRevision == expectedRevision,
+              let document = selectedDocument else { return false }
+        let startingGeneration = generation
+        let startingCatalogURL = self.catalogURL
+        let prepared = try await maskEngine.applyingMasks(
+            sourceURL: try repository.sourceURL(for: document), edits: expectedEdits, edit: edit)
+        try Task.checkCancellation()
+        guard self.catalogID == catalogID, self.catalogURL == startingCatalogURL,
+              selectedAssetID == assetID, currentEdits == expectedEdits,
+              generation == startingGeneration, editRevision == expectedRevision else { return false }
+        var acceptedEdits = prepared.edits
+        for index in acceptedEdits.modules.indices {
+            if let existing = expectedEdits.modules.first(where: {
+                $0.operation == acceptedEdits.modules[index].operation
+                    && $0.instance == acceptedEdits.modules[index].instance
+            }) { acceptedEdits.modules[index].id = existing.id }
+        }
+        endEditing()
+        updateEdits(label: label) { $0 = acceptedEdits }
+        return true
+    }
+
     func resetEdits() {
         endEditing()
         updateEdits(label: "Reset adjustments") { $0 = .original }
@@ -229,6 +314,7 @@ extension EditorStore {
         endEditing()
         guard let index = selectedIndex, documents[index].canUndo else { return }
         documents[index].undo()
+        editRevision &+= 1
         refreshDirtyState()
         requestRender(immediate: true)
     }
@@ -237,6 +323,7 @@ extension EditorStore {
         endEditing()
         guard let index = selectedIndex, documents[index].canRedo else { return }
         documents[index].redo()
+        editRevision &+= 1
         refreshDirtyState()
         requestRender(immediate: true)
     }
@@ -245,6 +332,7 @@ extension EditorStore {
         endEditing()
         guard let selectedIndex else { return }
         documents[selectedIndex].restoreHistory(at: index)
+        editRevision &+= 1
         refreshDirtyState()
         requestRender(immediate: true)
     }
@@ -284,6 +372,7 @@ extension EditorStore {
         endEditing()
         renderTask?.cancel()
         generation &+= 1
+        editRevision &+= 1
         selectedAssetID = nil
         preview = nil
         isRendering = false
@@ -329,9 +418,13 @@ extension EditorStore {
         let nextRepository = CatalogRepository(rootURL: url)
         let nextCatalog = try nextRepository.load()
         renderTask?.cancel()
+        thumbnailService.reset()
+        for photo in cachedPreviews.values { retiredPreviews[photo.imageURL] = photo }
+        cachedPreviews.removeAll()
         repository = nextRepository
         catalog = nextCatalog
         catalogURL = url
+        editRevision &+= 1
         documents = nextCatalog.documents
         library = (nextCatalog.library ?? LibraryCatalog()).normalized(knownAssetIDs: Set(documents.map(\.id)))
         selectedAssetID = nextCatalog.selectedAssetID.flatMap { id in
@@ -424,6 +517,7 @@ extension EditorStore {
         var edits = documents[index].edits
         mutation(&edits)
         guard edits != documents[index].edits else { return }
+        editRevision &+= 1
         if editGestureAssetID == selectedAssetID {
             documents[index].edits = edits
         } else {
@@ -459,6 +553,9 @@ extension EditorStore {
                         return
                     }
                     self.preview = result
+                    if let previous = self.cachedPreviews.updateValue(result, forKey: result.assetID) {
+                        self.retiredPreviews[previous.imageURL] = previous
+                    }
                     self.isRendering = false
                     self.statusMessage = "\(result.pixelWidth) × \(result.pixelHeight) · \(result.colorSpaceName)"
                 } catch is CancellationError { } catch {

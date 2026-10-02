@@ -1,8 +1,12 @@
 import Foundation
 
 struct MaskPoint: Codable, Equatable, Sendable {
-    var x: Double
-    var y: Double
+    var horizontal: Double
+    var vertical: Double
+
+    private enum CodingKeys: String, CodingKey {
+        case horizontal = "x", vertical = "y"
+    }
 }
 
 struct CircleMask: Codable, Equatable, Sendable {
