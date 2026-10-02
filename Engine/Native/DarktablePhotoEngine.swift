@@ -32,7 +32,9 @@ actor DarktablePhotoEngine: PhotoEngine {
             supportsModuleEditing: runtime != nil, supportsFullResolutionExport: runtime != nil,
             limitations: [
                 "Scalar parameters are editable; curves and compound arrays remain preserved in opaque blobs.",
-                "Native drawn-mask and blending controls remain incomplete.",
+                "Numeric circle, ellipse, gradient and ordered-group masks are editable; canvas mapping is unverified.",
+                "Seeded modes, opacity and drawn assignment are editable; " +
+                    "parametric and raster editors are unavailable.",
                 "CPU processing; OpenCL acceleration remains disabled during validation.",
                 "White balance uses the camera matrix and darktable's temperature spectral conversion."
             ], supportedExportFormats: runtime == nil ? [] : [.jpeg, .png, .tiff],
@@ -104,9 +106,10 @@ actor DarktablePhotoEngine: PhotoEngine {
         )
     }
 
-    private func execute(
+    func execute(
         sourceURL: URL, edits: EditState, maximumDimension: Int, command: String,
-        format: ExportFormat = .png, colorSpace: ExportColorSpace = .sRGB, quality: Double = 0.95
+        format: ExportFormat = .png, colorSpace: ExportColorSpace = .sRGB, quality: Double = 0.95,
+        maskEdit: MaskWireEdit? = nil
     ) async throws -> HelperExecutionResult {
         guard let runtime else {
             throw PhotoEngineError.unavailable(runtimeFailure)
@@ -137,7 +140,7 @@ actor DarktablePhotoEngine: PhotoEngine {
                 source: source.path, xmp: xmp == nil ? nil : history.path, edits: orderedEdits,
                 destination: output.path, format: format == .jpeg ? "jpeg" : format.rawValue,
                 colorSpace: colorSpace.rawValue, maximumDimension: max(0, maximumDimension),
-                quality: max(1, Int((min(1, max(0, quality)) * 100).rounded()))
+                quality: max(1, Int((min(1, max(0, quality)) * 100).rounded())), maskEdit: maskEdit
             )
             let request = directory.appendingPathComponent("request.json")
             let response = directory.appendingPathComponent("response.json")

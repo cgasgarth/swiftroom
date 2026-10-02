@@ -1,6 +1,6 @@
 # swiftroom
 
-Use GPT-6.1 Sol and NORMAL service tier. No additional threads without parent coordination.
+Use GPT-6.1 Sol; Fast is authorized. No additional threads without parent coordination.
 Standalone public repository cgasgarth/swiftroom; never use GitHub Fork. Parent owns PR review and merges.
 Never edit original darktable/RapidRAW projects, installed apps, catalogs, or photo libraries.
 Import copies into a separate catalog. Never write XMP beside source originals.
@@ -11,6 +11,7 @@ No paid services, unrecognized installs, security changes or silent Xcode licens
 
 - Integration: App/, Core/, Scripts/, Tests/, root configuration.
 - Engine: Engine/ and mandatory engine source provenance/license notices.
+- Masks Engine owner: Engine/ and new Core/Masks/. Shared Core remains Integration owned.
 - UI: UI/. NativePhotoRootView(store: EditorStore) and NativePhotoMetalView(imageURL:zoom:onError:).
 - QA: QA/ integration/E2E evidence and tests; report defects to source owner.
 - Do not change another owner's files. Coordinate shared API changes with integration lead.

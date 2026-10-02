@@ -16,12 +16,14 @@ final class EditorStore: ObservableObject {
     @Published private(set) var lastExport: ExportResult?
     @Published private(set) var catalogURL: URL
     @Published private(set) var hasUnsavedChanges = false
+    @Published private(set) var library = LibraryCatalog()
     @Published var zoom: Double = 0
     @Published var isInspectorVisible = true
     @Published var isLibraryVisible = true
     @Published var exportFormat: ExportFormat = .jpeg
     @Published var exportColorSpace: ExportColorSpace = .sRGB
     @Published var exportQuality: Double = 0.95
+    @Published var isExportSheetPresented = false
 
     let engine: any PhotoEngine
     var capabilities: EngineCapabilities { engine.capabilities }
@@ -34,6 +36,7 @@ final class EditorStore: ObservableObject {
     var temperature: Double { currentEdits.temperature ?? 6500 }
     var tint: Double { currentEdits.tint }
     var catalogName: String { catalogURL.lastPathComponent.replacingOccurrences(of: ".nativephotocatalog", with: "") }
+    var catalogID: UUID { catalog.id }
 
     private var repository: CatalogRepository
     private var catalog: PhotoCatalog
@@ -41,6 +44,7 @@ final class EditorStore: ObservableObject {
     private var generation: UInt64 = 0
     private var editGestureAssetID: UUID?
     private var editGestureLabel: String?
+    private var previewMaximumDimension = 2560
 
     init(engine: any PhotoEngine, catalogURL: URL) throws {
         self.engine = engine
@@ -48,7 +52,10 @@ final class EditorStore: ObservableObject {
         repository = CatalogRepository(rootURL: catalogURL)
         catalog = try repository.load()
         documents = catalog.documents
-        selectedAssetID = catalog.selectedAssetID.flatMap { id in documents.contains { $0.id == id } ? id : nil } ?? documents.first?.id
+        library = (catalog.library ?? LibraryCatalog()).normalized(knownAssetIDs: Set(documents.map(\.id)))
+        selectedAssetID = catalog.selectedAssetID.flatMap { id in
+            documents.contains { $0.id == id } ? id : nil
+        } ?? documents.first?.id
         statusMessage = documents.isEmpty ? "Ready to import" : "\(documents.count) photos"
     }
 
@@ -56,11 +63,14 @@ final class EditorStore: ObservableObject {
 
     func clearError() { errorMessage = nil }
     func reportError(_ message: String) { errorMessage = message; statusMessage = "Needs attention" }
+}
+
+extension EditorStore {
 
     func importPhotos() {
         let panel = NSOpenPanel()
         panel.title = "Import Photos"
-        panel.message = "Photos are copied into this Native Photo catalog."
+        panel.message = "Photos are copied into this swiftroom catalog."
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
         panel.allowedContentTypes = [.image, .rawImage]
@@ -74,22 +84,32 @@ final class EditorStore: ObservableObject {
         isImporting = true
         errorMessage = nil
         defer { isImporting = false }
+        let importRepository = repository
+        let importCatalogID = catalog.id
+        let importCatalogURL = catalogURL
         var importedIDs: [UUID] = []
         for (offset, url) in urls.enumerated() {
             statusMessage = "Importing \(offset + 1) of \(urls.count)…"
             do {
                 let id = UUID()
-                let currentRepository = repository
                 let relative = try await Task.detached(priority: .userInitiated) {
-                    try currentRepository.copyOriginal(from: url, id: id)
+                    try importRepository.copyOriginal(from: url, id: id)
                 }.value
-                let copiedURL = catalogURL.appendingPathComponent(relative)
-                let metadata = try await engine.inspect(sourceURL: copiedURL)
+                let copiedURL = importCatalogURL.appendingPathComponent(relative)
+                let prepared: PreparedPhoto
+                do { prepared = try await engine.prepare(sourceURL: copiedURL, edits: .original) } catch {
+                    try? FileManager.default.removeItem(at: copiedURL.deletingLastPathComponent())
+                    throw error
+                }
+                guard catalog.id == importCatalogID, catalogURL == importCatalogURL else {
+                    try? FileManager.default.removeItem(at: copiedURL.deletingLastPathComponent())
+                    throw CatalogError.invalid("The catalog changed during import.")
+                }
                 let document = PhotoDocument(id: id, fileName: url.lastPathComponent,
                     originalSourcePath: url.path, relativeOriginalPath: relative,
-                    metadata: metadata, edits: .original,
-                    history: [HistoryEntry(label: "Original", edits: .original)],
-                    historyIndex: 0, savedEdits: .original)
+                    metadata: prepared.metadata, edits: prepared.edits,
+                    history: [HistoryEntry(label: "Original", edits: prepared.edits)],
+                    historyIndex: 0, savedEdits: prepared.edits)
                 documents.append(document)
                 importedIDs.append(id)
                 hasUnsavedChanges = true
@@ -109,6 +129,7 @@ final class EditorStore: ObservableObject {
         renderTask?.cancel()
         selectedAssetID = id
         preview = nil
+        previewMaximumDimension = 2560
         zoom = 0
         errorMessage = nil
         requestRender(immediate: true)
@@ -139,7 +160,7 @@ final class EditorStore: ObservableObject {
 
     func setExposure(_ value: Double) {
         guard capabilities.supportsExposure else { return }
-        updateEdits(label: "Exposure") { $0.exposureEV = max(-6, min(6, value)) }
+        updateEdits(label: "Exposure") { $0.exposureEV = max(-18, min(18, value)) }
     }
 
     func setTemperature(_ value: Double) {
@@ -159,9 +180,44 @@ final class EditorStore: ObservableObject {
     func setModuleState(_ module: ModuleState) {
         guard capabilities.supportsModuleEditing else { return }
         updateEdits(label: module.name ?? module.operation) { edits in
-            if let index = edits.modules.firstIndex(where: { $0.id == module.id }) { edits.modules[index] = module }
-            else { edits.modules.append(module) }
+            if let index = edits.modules.firstIndex(where: { $0.id == module.id }) {
+                edits.modules[index] = module
+            } else {
+                edits.modules.append(module)
+            }
         }
+    }
+
+    func commitCurrentModule(
+        assetID: UUID, catalogID: UUID, expectedEdits: EditState, module: ModuleState,
+        values: [String: ModuleParameterValue], label: String
+    ) async throws -> Bool {
+        guard capabilities.supportsModuleEditing, self.catalogID == catalogID,
+              selectedAssetID == assetID, currentEdits == expectedEdits,
+              expectedEdits.modules.contains(where: { $0.id == module.id }) else { return false }
+        guard let document = selectedDocument else { return false }
+        let startingGeneration = generation
+        let startingCatalogURL = self.catalogURL
+        let source = try repository.sourceURL(for: document)
+        var prepared = expectedEdits
+        if expectedEdits.exposureEV != 0 || expectedEdits.temperature != nil || expectedEdits.tint != 0 {
+            prepared = try await engine.prepare(sourceURL: source, edits: expectedEdits).edits
+        }
+        for index in prepared.modules.indices {
+            if let existing = expectedEdits.modules.first(where: {
+                $0.operation == prepared.modules[index].operation && $0.instance == prepared.modules[index].instance
+            }) { prepared.modules[index].id = existing.id }
+        }
+        guard let index = prepared.modules.firstIndex(where: { $0.id == module.id }) else { return false }
+        prepared.modules[index] = try await engine.updating(module: prepared.modules[index], values: values)
+        prepared.modules[index].name = module.name
+        prepared.modules[index].enabled = module.enabled
+        try Task.checkCancellation()
+        guard self.catalogID == catalogID, selectedAssetID == assetID, currentEdits == expectedEdits,
+              generation == startingGeneration, self.catalogURL == startingCatalogURL else { return false }
+        endEditing()
+        updateEdits(label: label) { $0 = prepared }
+        return true
     }
 
     func resetEdits() {
@@ -205,6 +261,37 @@ final class EditorStore: ObservableObject {
         hasUnsavedChanges = true
     }
 
+    func updateLibrary(_ value: LibraryCatalog) {
+        library = value.normalized(knownAssetIDs: Set(documents.map(\.id)))
+        refreshDirtyState()
+    }
+
+    func setRatings(_ rating: Int, assetIDs: Set<UUID>) {
+        for index in documents.indices where assetIDs.contains(documents[index].id) {
+            documents[index].rating = max(0, min(5, rating))
+        }
+        refreshDirtyState()
+    }
+
+    func setRejected(_ rejected: Bool, assetIDs: Set<UUID>) {
+        for index in documents.indices where assetIDs.contains(documents[index].id) {
+            documents[index].isRejected = rejected
+        }
+        refreshDirtyState()
+    }
+
+    func clearAssetSelection() {
+        endEditing()
+        renderTask?.cancel()
+        generation &+= 1
+        selectedAssetID = nil
+        preview = nil
+        isRendering = false
+    }
+}
+
+extension EditorStore {
+
     func save() {
         do { try saveCatalog() } catch { reportError("Could not save catalog: \(error.localizedDescription)") }
     }
@@ -216,6 +303,7 @@ final class EditorStore: ObservableObject {
         var updatedCatalog = catalog
         updatedCatalog.documents = savedDocuments
         updatedCatalog.selectedAssetID = selectedAssetID
+        updatedCatalog.library = library
         try repository.save(updatedCatalog)
         catalog = updatedCatalog
         documents = savedDocuments
@@ -224,8 +312,9 @@ final class EditorStore: ObservableObject {
     }
 
     func openCatalogPanel() {
+        guard !isImporting else { return }
         let panel = NSOpenPanel()
-        panel.title = "Open Native Photo Catalog"
+        panel.title = "Open swiftroom Catalog"
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         guard panel.runModal() == .OK, let url = panel.url else { return }
@@ -233,6 +322,7 @@ final class EditorStore: ObservableObject {
     }
 
     func openCatalog(at url: URL) throws {
+        guard !isImporting else { throw CatalogError.invalid("Wait for photo import to finish before opening a catalog.") }
         if hasUnsavedChanges { try saveCatalog() }
         let nextRepository = CatalogRepository(rootURL: url)
         let nextCatalog = try nextRepository.load()
@@ -241,8 +331,12 @@ final class EditorStore: ObservableObject {
         catalog = nextCatalog
         catalogURL = url
         documents = nextCatalog.documents
-        selectedAssetID = nextCatalog.selectedAssetID.flatMap { id in documents.contains { $0.id == id } ? id : nil } ?? documents.first?.id
+        library = (nextCatalog.library ?? LibraryCatalog()).normalized(knownAssetIDs: Set(documents.map(\.id)))
+        selectedAssetID = nextCatalog.selectedAssetID.flatMap { id in
+            documents.contains { $0.id == id } ? id : nil
+        } ?? documents.first?.id
         preview = nil
+        previewMaximumDimension = 2560
         zoom = 0
         hasUnsavedChanges = false
         errorMessage = nil
@@ -250,41 +344,72 @@ final class EditorStore: ObservableObject {
     }
 
     func exportPhoto() {
-        guard let document = selectedDocument, !isExporting else { return }
-        let panel = NSSavePanel()
-        panel.title = "Export Photo"
-        panel.nameFieldStringValue = URL(fileURLWithPath: document.fileName).deletingPathExtension().lastPathComponent + "." + exportFormat.fileExtension
-        panel.allowedContentTypes = [UTType(filenameExtension: exportFormat.fileExtension) ?? .image]
-        guard panel.runModal() == .OK, let destination = panel.url else { return }
-        Task { await export(to: destination) }
+        guard selectedDocument != nil, !isExporting else { return }
+        isExportSheetPresented = true
+    }
+
+    func makeExportRequest(
+        destination: URL, format: ExportFormat, colorSpace: ExportColorSpace,
+        quality: Double, maximumDimension: Int?, overwriteAuthorization: ExportOverwriteAuthorization? = nil
+    ) throws -> ExportRequest {
+        endEditing()
+        guard let document = selectedDocument else { throw PhotoEngineError.unsupported("Choose a photo to export.") }
+        guard capabilities.supportsFullResolutionExport || maximumDimension != nil else {
+            throw PhotoEngineError.unsupported("This engine does not support full-resolution export.")
+        }
+        let sources = try documents.flatMap { document in
+            [try repository.sourceURL(for: document), URL(fileURLWithPath: document.originalSourcePath)]
+        }
+        let request = ExportRequest(
+            assetID: document.id, sourceURL: try repository.sourceURL(for: document), edits: document.edits,
+            destinationURL: destination, format: format, colorSpace: colorSpace, quality: quality,
+            maximumDimension: maximumDimension, protectedSourceURLs: sources,
+            protectedDirectories: [catalogURL.appendingPathComponent("Originals")],
+            overwriteAuthorization: overwriteAuthorization)
+        try ExportProtection.validateOriginals(request)
+        return request
+    }
+
+    func export(_ request: ExportRequest) async throws -> ExportResult {
+        guard !isExporting else { throw PhotoEngineError.processing("An export is already in progress.") }
+        try ExportProtection.validate(request)
+        isExporting = true
+        defer { isExporting = false }
+        statusMessage = "Exporting photo…"
+        do {
+            let result = try await engine.export(request)
+            lastExport = result
+            statusMessage = "Exported \(result.destinationURL.lastPathComponent)"
+            return result
+        } catch is CancellationError {
+            statusMessage = "Export cancelled"
+            throw CancellationError()
+        } catch {
+            statusMessage = "Export failed"
+            throw error
+        }
     }
 
     func export(to destination: URL, maximumDimension: Int? = nil) async {
-        guard let document = selectedDocument, !isExporting else { return }
-        endEditing()
-        guard capabilities.supportsFullResolutionExport || maximumDimension != nil else {
-            reportError("This engine does not support full-resolution export."); return
-        }
         do {
-            let sourceURL = try repository.sourceURL(for: document)
-            guard destination.standardizedFileURL != sourceURL.standardizedFileURL,
-                  !destination.standardizedFileURL.path.hasPrefix(repository.rootURL.standardizedFileURL.path + "/Originals/") else {
-                throw CatalogError.invalid("Choose an export location outside the catalog originals.")
-            }
-            let request = ExportRequest(assetID: document.id, sourceURL: sourceURL,
-                edits: document.edits, destinationURL: destination, format: exportFormat,
+            let request = try makeExportRequest(destination: destination, format: exportFormat,
                 colorSpace: exportColorSpace, quality: exportQuality, maximumDimension: maximumDimension)
-            isExporting = true
-            defer { isExporting = false }
-            statusMessage = "Exporting \(document.fileName)…"
-            lastExport = try await engine.export(request)
-            statusMessage = "Exported \(destination.lastPathComponent)"
+            _ = try await export(request)
         } catch { reportError("Export failed: \(error.localizedDescription)") }
     }
 
     func retryRender() { errorMessage = nil; requestRender(immediate: true) }
     func zoomToFit() { zoom = 0 }
-    func zoomToActualSize() { zoom = 1 }
+    func zoomToActualSize() {
+        zoom = 1
+        renderSelectedAtFullResolution()
+    }
+    func renderSelectedAtFullResolution() {
+        guard capabilities.supportsFullResolutionExport, let document = selectedDocument else { return }
+        let dimension = max(document.metadata.pixelWidth, document.metadata.pixelHeight)
+        previewMaximumDimension = dimension > 0 ? dimension : 0
+        requestRender(immediate: true)
+    }
     func zoomIn() { zoom = min(8, zoom == 0 ? 1 : zoom * 1.25) }
     func zoomOut() { zoom = zoom <= 0.25 ? 0 : zoom / 1.25 }
 
@@ -297,14 +422,18 @@ final class EditorStore: ObservableObject {
         var edits = documents[index].edits
         mutation(&edits)
         guard edits != documents[index].edits else { return }
-        if editGestureAssetID == selectedAssetID { documents[index].edits = edits }
-        else { documents[index].commit(edits, label: label) }
+        if editGestureAssetID == selectedAssetID {
+            documents[index].edits = edits
+        } else {
+            documents[index].commit(edits, label: label)
+        }
         refreshDirtyState()
         requestRender(immediate: false)
     }
 
     private func refreshDirtyState() {
         hasUnsavedChanges = documents.contains(where: \.isDirty) || documents != catalog.documents
+            || library != (catalog.library ?? LibraryCatalog())
     }
 
     private func requestRender(immediate: Bool) {
@@ -314,7 +443,7 @@ final class EditorStore: ObservableObject {
         do {
             let request = RenderRequest(assetID: document.id, generation: generation,
                 sourceURL: try repository.sourceURL(for: document), edits: document.edits,
-                maximumDimension: 2560)
+                maximumDimension: previewMaximumDimension)
             isRendering = true
             statusMessage = "Developing \(document.fileName)…"
             renderTask = Task { [weak self, engine] in
@@ -322,14 +451,15 @@ final class EditorStore: ObservableObject {
                     if !immediate { try await Task.sleep(for: .milliseconds(180)) }
                     try Task.checkCancellation()
                     let result = try await engine.render(request)
-                    try Task.checkCancellation()
-                    guard let self, self.selectedAssetID == result.assetID,
-                          self.generation == result.generation else { return }
+                    guard !Task.isCancelled, let self, self.selectedAssetID == result.assetID,
+                          self.generation == result.generation else {
+                        await engine.release(result)
+                        return
+                    }
                     self.preview = result
                     self.isRendering = false
                     self.statusMessage = "\(result.pixelWidth) × \(result.pixelHeight) · \(result.colorSpaceName)"
-                } catch is CancellationError { }
-                catch {
+                } catch is CancellationError { } catch {
                     guard let self, self.selectedAssetID == request.assetID,
                           self.generation == request.generation else { return }
                     self.isRendering = false
