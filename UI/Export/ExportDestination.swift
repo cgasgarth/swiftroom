@@ -78,7 +78,7 @@ extension ExportColorSpace {
         switch self {
         case .sRGB: return "sRGB"
         case .displayP3: return "Display P3"
-        case .adobeRGB: return "Adobe RGB (1998)"
+        case .adobeRGB: return "Adobe RGB (compatible)"
         }
     }
 }
