@@ -14,14 +14,14 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$ROOT/build/module-cac
 "$ENGINE_ROOT/build-helper.sh"
 "$ENGINE_ROOT/stage-runtime.sh" "$APP"
 SOURCES=()
-while IFS= read -r path; do SOURCES+=("$path"); done < <(find "$ROOT/App" "$ROOT/Core" "$ENGINE_ROOT/Native" "$UI_ROOT" -name '*.swift' -type f | sort)
+while IFS= read -r path; do SOURCES+=("$path"); done < <(find "$ROOT/App" "$ROOT/Core" "$ENGINE_ROOT/Native" "$UI_ROOT" -name '*.swift' -type f -not -path '*/Integration/*' | sort)
 if test "$LIBRARY_ROOT" != "$ROOT/Core/Library"; then
-    while IFS= read -r path; do SOURCES+=("$path"); done < <(find "$LIBRARY_ROOT" -name '*.swift' -type f | sort)
+    while IFS= read -r path; do SOURCES+=("$path"); done < <(find "$LIBRARY_ROOT" -name '*.swift' -type f -not -path '*/Integration/*' | sort)
 fi
 for extra in "${NATIVE_PHOTO_ADVANCED_SOURCE:-}" "${NATIVE_PHOTO_EXPORT_SOURCE:-}" \
     "${NATIVE_PHOTO_LIBRARY_UI_SOURCE:-}" "${NATIVE_PHOTO_MASKS_UI_SOURCE:-}"; do
     if test -n "$extra"; then
-        while IFS= read -r path; do SOURCES+=("$path"); done < <(find "$extra" -name '*.swift' -type f | sort)
+        while IFS= read -r path; do SOURCES+=("$path"); done < <(find "$extra" -name '*.swift' -type f -not -path '*/Integration/*' | sort)
     fi
 done
 "$SWIFTC" -sdk "$SDK" -target arm64-apple-macosx26.0 -swift-version 6 -strict-concurrency=complete -warnings-as-errors -enable-actor-data-race-checks -parse-as-library -module-name NativePhoto -module-cache-path "$ROOT/build/module-cache" -g -O "${SOURCES[@]}" -o "$APP/Contents/MacOS/swiftroom"
