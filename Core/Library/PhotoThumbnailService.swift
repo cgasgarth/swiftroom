@@ -11,8 +11,8 @@ struct PhotoThumbnailRevision: Equatable, Sendable {
 
 @MainActor
 final class PhotoThumbnailService: ObservableObject {
-    @Published private(set) var urls: [UUID: URL] = [:]
-    @Published private(set) var errors: [UUID: String] = [:]
+    @Published private var cachedURLs: [UUID: URL] = [:]
+    @Published private var failureMessages: [UUID: String] = [:]
     @Published private(set) var generation: UInt64 = 0
     @Published private(set) var isRendering = false
     private weak var store: EditorStore?
@@ -27,6 +27,19 @@ final class PhotoThumbnailService: ObservableObject {
     private var active: Snapshot?
     private var activeRender: Task<RenderedPhoto, any Error>?
     private var sequence: UInt64 = 0
+    private var failureSnapshots: [UUID: Snapshot] = [:]
+
+    var urls: [UUID: URL] {
+        cachedURLs.filter { id, url in
+            frames.contains { $0.snapshot.assetID == id && $0.photo.imageURL == url && isCurrent($0.snapshot) }
+        }
+    }
+
+    var errors: [UUID: String] {
+        failureMessages.filter { id, _ in
+            failureSnapshots[id].map(isCurrent) ?? false
+        }
+    }
 
     init(store: EditorStore, maximumRetainedFrames: Int = 40) {
         self.store = store
@@ -46,10 +59,10 @@ final class PhotoThumbnailService: ObservableObject {
                    FileManager.default.fileExists(atPath: frames[index].photo.imageURL.path) {
                     sequence &+= 1
                     frames[index].access = sequence
-                    urls[assetID] = frames[index].photo.imageURL
+                    cachedURLs[assetID] = frames[index].photo.imageURL
                 } else {
-                    urls[assetID] = nil
-                    errors[assetID] = nil
+                    cachedURLs[assetID] = nil
+                    clearError(assetID)
                     replenishQueue()
                     startWorker()
                 }
@@ -60,7 +73,7 @@ final class PhotoThumbnailService: ObservableObject {
     }
 
     func retry(_ assetID: UUID) {
-        errors[assetID] = nil
+        clearError(assetID)
         replenishQueue()
         startWorker()
     }
@@ -75,8 +88,9 @@ final class PhotoThumbnailService: ObservableObject {
         for consumer in previousConsumers { consumer.continuation.resume() }
         let previousFrames = frames
         frames.removeAll()
-        urls.removeAll()
-        errors.removeAll()
+        cachedURLs.removeAll()
+        failureSnapshots.removeAll()
+        failureMessages.removeAll()
         for frame in previousFrames { release(frame.photo) }
     }
 
@@ -142,11 +156,21 @@ final class PhotoThumbnailService: ObservableObject {
         Task { [engine] in await engine.release(photo) }
     }
 
+    private func clearError(_ assetID: UUID) {
+        failureSnapshots[assetID] = nil
+        failureMessages[assetID] = nil
+    }
+
+    private func reportError(_ message: String, for snapshot: Snapshot) {
+        failureSnapshots[snapshot.assetID] = snapshot
+        failureMessages[snapshot.assetID] = message
+    }
+
     private func removeMissingFrames() {
         let missing = frames.filter { !FileManager.default.fileExists(atPath: $0.photo.imageURL.path) }
         for frame in missing {
             frames.removeAll { $0.photo.imageURL == frame.photo.imageURL }
-            if urls[frame.snapshot.assetID] == frame.photo.imageURL { urls[frame.snapshot.assetID] = nil }
+            if cachedURLs[frame.snapshot.assetID] == frame.photo.imageURL { cachedURLs[frame.snapshot.assetID] = nil }
             release(frame.photo)
         }
     }
@@ -156,7 +180,7 @@ final class PhotoThumbnailService: ObservableObject {
         for frame in removable {
             guard !isCurrent(frame.snapshot) || frames.count > frameLimit - count else { continue }
             frames.removeAll { $0.photo.imageURL == frame.photo.imageURL }
-            if urls[frame.snapshot.assetID] == frame.photo.imageURL { urls[frame.snapshot.assetID] = nil }
+            if cachedURLs[frame.snapshot.assetID] == frame.photo.imageURL { cachedURLs[frame.snapshot.assetID] = nil }
             release(frame.photo)
         }
     }
@@ -220,18 +244,18 @@ extension PhotoThumbnailService {
                   photo.pixelWidth > 0, photo.pixelHeight > 0,
                   max(photo.pixelWidth, photo.pixelHeight) <= 240 else {
                 await engine.release(photo)
-                errors[snapshot.assetID] = "The engine returned an invalid thumbnail."
+                reportError("The engine returned an invalid thumbnail.", for: snapshot)
                 return
             }
             sequence &+= 1
             frames.append(Frame(snapshot: snapshot, photo: photo, access: sequence))
-            urls[snapshot.assetID] = photo.imageURL
-            errors[snapshot.assetID] = nil
+            cachedURLs[snapshot.assetID] = photo.imageURL
+            clearError(snapshot.assetID)
             trimFrames(reserving: 0)
         } catch is CancellationError {
         } catch {
             if generation == expectedGeneration, isCurrent(snapshot), isConsumed(snapshot) {
-                errors[snapshot.assetID] = error.localizedDescription
+                reportError(error.localizedDescription, for: snapshot)
             }
         }
     }

@@ -43,7 +43,12 @@ struct NativeLibraryBrowser: View {
             Table(model.visibleDocuments, selection: Binding(get: { model.selectedIDs }, set: { model.select($0) })) {
                 TableColumn("Photo") { document in
                     NativeLibraryRow(document: document, isFavorite: store.library.favorites.contains(document.id),
-                        imageURL: previewURLs[document.id])
+                        imageURL: NativeLibraryRow.imageURL(for: document.id, store: store, previewURLs: previewURLs),
+                        thumbnailError: store.thumbnailErrors[document.id])
+                        .task(id: PhotoThumbnailRevision(catalogID: store.catalogID, catalogURL: store.catalogURL,
+                            assetID: document.id, edits: document.edits, generation: store.thumbnailGeneration)) {
+                            await store.requestThumbnail(document.id)
+                        }
                 }.width(min: 200, ideal: 300)
                 TableColumn("Rating") { document in Text("\(document.rating)") }.width(60)
                 TableColumn("Camera") { document in Text(document.metadata.camera ?? "—") }
@@ -58,6 +63,9 @@ struct NativeLibraryBrowser: View {
             .modifier(NativeLibraryKeyboard(model: model))
             .contextMenu(forSelectionType: UUID.self) { ids in
                 if !ids.isEmpty { NativeLibraryActions(model: model, targets: ids) }
+                ForEach(thumbnailFailures(in: ids)) { document in
+                    Button("Retry Thumbnail: \(document.fileName)") { store.retryThumbnail(document.id) }
+                }
             } primaryAction: { ids in
                 model.select(ids)
                 dismiss()
@@ -72,5 +80,9 @@ struct NativeLibraryBrowser: View {
                     .keyboardShortcut(.defaultAction)
             }
         }.padding(20).frame(minWidth: 760, idealWidth: 900, minHeight: 480, idealHeight: 620)
+    }
+
+    private func thumbnailFailures(in ids: Set<UUID>) -> [PhotoDocument] {
+        model.visibleDocuments.filter { ids.contains($0.id) && store.thumbnailErrors[$0.id] != nil }
     }
 }
