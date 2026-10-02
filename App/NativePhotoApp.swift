@@ -79,6 +79,7 @@ struct EditorCommands: Commands {
                 .keyboardShortcut("i", modifiers: [.command, .shift])
             Button("Open Catalog…") { store?.openCatalogPanel() }
                 .keyboardShortcut("o", modifiers: .command)
+                .disabled(store?.isImporting ?? false)
             Divider()
             Button("Save Catalog") { store?.save() }
                 .keyboardShortcut("s", modifiers: .command)

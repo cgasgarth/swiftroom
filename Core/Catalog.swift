@@ -58,6 +58,7 @@ struct PhotoCatalog: Codable, Sendable {
     var createdAt: Date = Date()
     var documents: [PhotoDocument] = []
     var selectedAssetID: UUID?
+    var library: LibraryCatalog?
 }
 
 enum CatalogError: LocalizedError {
