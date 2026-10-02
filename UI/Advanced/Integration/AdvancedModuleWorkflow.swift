@@ -1,0 +1,560 @@
+#if ADVANCED_MODULE_INTEGRATION
+    import CryptoKit
+    import Darwin
+    import Foundation
+    import ImageIO
+
+    private struct AdvancedWorkflowFailure: Error {
+        let message: String
+    }
+
+    @main
+    enum AdvancedModuleWorkflow {
+        @MainActor
+        static func main() async {
+            do { try await execute() } catch {
+                FileHandle.standardError.write(Data("ADVANCED INTEGRATION FAIL: \(error)\n".utf8))
+                exit(1)
+            }
+        }
+
+        @MainActor
+        private static func execute() async throws {
+            guard let fixturePath = CommandLine.arguments.dropFirst().first else {
+                throw AdvancedWorkflowFailure(message: "Provide a copied RAW fixture path.")
+            }
+            let fixture = URL(fileURLWithPath: fixturePath)
+            let root = URL(fileURLWithPath: "/tmp/swiftroom-advanced-integration")
+                .appendingPathComponent(UUID().uuidString)
+            let catalogURL = root.appendingPathComponent("Catalog")
+            let engine = NativePhotoEngineFactory.make(
+                cacheDirectory: catalogURL.appendingPathComponent("Cache"))
+            let store = try EditorStore(engine: engine, catalogURL: catalogURL)
+            let originalHash = try digest(fixture)
+            await store.importURLs([fixture])
+            await store.waitForRender()
+            guard let document = store.selectedDocument, let baseline = store.preview else {
+                throw AdvancedWorkflowFailure(
+                    message: "Real RAW import/render failed: \(store.errorMessage ?? "unknown")")
+            }
+            let baselineDigest = try pixels(baseline.imageURL)
+            let editor = AdvancedModuleEditor(store: store)
+            editor.activate()
+            await editor.waitForLoad()
+            editor.chooseOperation("exposure")
+            await editor.waitForLoad()
+            if CommandLine.arguments.contains("--rapid-release-save") {
+                try await rapidReleaseAndSave(editor: editor, store: store)
+                try require(try digest(fixture) == originalHash, "Input RAW was modified.")
+                let copied = try CatalogRepository(rootURL: catalogURL).sourceURL(for: document)
+                try require(try digest(copied) == originalHash, "Copied original was modified.")
+                print("ADVANCED RAPID RELEASE/SAVE PASS \(root.path)")
+                return
+            }
+            try await verifyExposure(
+                editor: editor, store: store, document: document, baselineDigest: baselineDigest)
+            try await persistence(editor: editor, store: store, baselineDigest: baselineDigest)
+            try await basicFolding(editor: editor, store: store)
+            try await exposureModes(editor: editor, store: store)
+            try await liveGestures(editor: editor, store: store)
+            try await rapidReleaseAndSave(editor: editor, store: store)
+            try await options(editor: editor, store: store, engine: engine)
+            try await integerEntry(editor: editor, store: store)
+            try await switching(editor: editor, store: store, fixture: fixture, firstID: document.id)
+            try require(try digest(fixture) == originalHash, "Input RAW was modified.")
+            let copied = try CatalogRepository(rootURL: catalogURL).sourceURL(for: document)
+            try require(try digest(copied) == originalHash, "Copied catalog original was modified.")
+            print("ADVANCED INTEGRATION PASS \(root.path)")
+        }
+
+        @MainActor
+        private static func verifyExposure(
+            editor: AdvancedModuleEditor, store: EditorStore,
+            document: PhotoDocument, baselineDigest: String
+        ) async throws {
+            guard let schema = editor.schema,
+                let originalModule = store.currentEdits.modules.first(where: {
+                    $0.id == editor.selectedModuleID
+                }),
+                let exposureField = schema.fields.first(where: { $0.name == "exposure" }),
+                let originalEV = editor.values["exposure"]?.doubleValue
+            else {
+                throw AdvancedWorkflowFailure(
+                    message: "Real exposure schema or values unavailable: \(editor.errorMessage ?? "unknown")"
+                )
+            }
+            try require(
+                editor.canEdit && !editor.hasChanges, "Decoded current values created a false dirty draft.")
+            let target = 1.45
+            let preciseValue = try hundredthsValue(field: exposureField, current: originalEV)
+            editor.setValue("exposure", value: preciseValue)
+            editor.setValidity("exposure", valid: false)
+            try require(!editor.canApply, "Invalid numeric draft allowed Apply.")
+            editor.setValidity("exposure", valid: true)
+            try require(editor.canApply, "Valid numeric draft did not allow Apply.")
+            let historyCount = store.history.count
+            editor.apply()
+            await editor.waitForApply()
+            await editor.waitForLoad()
+            await store.waitForRender()
+            guard let changed = store.currentEdits.modules.first(where: { $0.id == originalModule.id }),
+                let changedPreview = store.preview
+            else {
+                throw AdvancedWorkflowFailure(message: "Applied exposure produced no module/preview.")
+            }
+            let expected = try await store.engine.updating(
+                module: originalModule, values: ["exposure": preciseValue])
+            try require(changed == expected, "Atomic commit changed unrelated module data.")
+            try require(store.history.count == historyCount + 1, "Module draft was not one history entry.")
+            try require(
+                store.currentEdits.darktableXMP == document.edits.darktableXMP, "Unrelated XMP changed.")
+            try require(
+                store.currentEdits.modules.filter { $0.id != changed.id }
+                    == document.edits.modules.filter { $0.id != changed.id }, "Other module state changed.")
+            let changedValues = try await store.engine.parameters(for: changed)
+            try require(
+                abs((changedValues["exposure"]?.doubleValue ?? .infinity) - target) < 0.000_001,
+                "Exact entry did not roundtrip through native float storage.")
+            let changedDigest = try pixels(changedPreview.imageURL)
+            try require(baselineDigest != changedDigest, "Advanced exposure left real RAW pixels unchanged.")
+            let actual = changedValues["exposure"]?.entryText ?? "missing"
+            print("PASS real schema/decode/exact-entry/encode/render: exposure \(originalEV) -> \(actual)")
+            print("PASS one history entry, unrelated module/blend/order/instance data and full XMP preserved")
+        }
+
+        @MainActor
+        private static func persistence(
+            editor: AdvancedModuleEditor, store: EditorStore,
+            baselineDigest: String
+        ) async throws {
+            store.undo()
+            await store.waitForRender()
+            guard let undoPreview = store.preview else {
+                throw AdvancedWorkflowFailure(message: "Undo render failed.")
+            }
+            try require(
+                try pixels(undoPreview.imageURL) == baselineDigest,
+                "Undo did not restore real baseline pixels.")
+            store.redo()
+            await store.waitForRender()
+            editor.synchronize()
+            await editor.waitForLoad()
+            try require(!editor.hasChanges, "External history navigation left a stale draft.")
+            try store.saveCatalog()
+            let reopened = try EditorStore(engine: store.engine, catalogURL: store.catalogURL)
+            try require(reopened.currentEdits == store.currentEdits, "Save/reopen changed advanced state.")
+            print("PASS pixel-exact undo, redo and full-state save/reopen")
+
+        }
+
+    }
+
+    extension AdvancedModuleWorkflow {
+        private static func hundredthsValue(
+            field: ModuleParameterField, current: Double
+        ) throws -> ModuleParameterValue {
+            let presentation = AdvancedNumericPresentation(field: field, unit: "EV")
+            try require(presentation.text(for: .number(current)) == "0.70",
+                "Loaded exposure was not shown at hundredths.")
+            try require(presentation.parsedValue("1.451") == nil,
+                "Floating entry accepted precision above hundredths.")
+            try require(presentation.cappedEntry("1.451") == "1.45",
+                "Floating control retained more than two fractional digits.")
+            guard let value = presentation.parsedValue("1.45") else {
+                throw AdvancedWorkflowFailure(message: "Hundredths exposure entry rejected real schema bounds.")
+            }
+            try require(presentation.roundedValue(1.454) == value,
+                "Slider staging exceeded the displayed hundredths contract.")
+            return value
+        }
+
+        @MainActor
+        private static func basicFolding(editor: AdvancedModuleEditor, store: EditorStore) async throws {
+            guard let before = editor.values["exposure"]?.doubleValue else {
+                throw AdvancedWorkflowFailure(message: "Missing exposure before basic adjustment.")
+            }
+            store.setExposure(0.25)
+            await store.waitForRender()
+            guard let frame = store.preview else {
+                throw AdvancedWorkflowFailure(message: "Basic exposure did not render.")
+            }
+            let expectedPixels = try pixels(frame.imageURL)
+            editor.synchronize()
+            await editor.waitForLoad()
+            let actual = editor.values["exposure"]?.doubleValue ?? .infinity
+            try require(abs(actual - before - 0.25) < 0.000_001,
+                "Advanced editor did not display effective basic exposure.")
+            let count = store.history.count
+            editor.draftName = "Folded basic exposure"
+            editor.apply()
+            await editor.waitForApply()
+            await editor.waitForLoad()
+            await store.waitForRender()
+            guard let folded = store.preview else {
+                throw AdvancedWorkflowFailure(message: "Folded exposure did not render.")
+            }
+            try require(store.exposureEV == 0, "Advanced commit retained an applied basic delta.")
+            try require(store.history.count == count + 1, "Basic folding created extra history steps.")
+            try require(try pixels(folded.imageURL) == expectedPixels,
+                "Folding basic exposure changed developed pixels.")
+            print("PASS effective advanced values and pixel-exact basic exposure folding")
+        }
+
+        @MainActor
+        private static func exposureModes(editor: AdvancedModuleEditor, store: EditorStore) async throws {
+            guard let schema = editor.schema, let baseline = store.preview,
+                let mode = schema.fields.first(where: { $0.name == "mode" }),
+                let automatic = mode.choices.first(where: { $0.name == "EXPOSURE_MODE_DEFLICKER" }),
+                let percentile = editor.values["deflicker_percentile"]?.doubleValue,
+                let target = editor.values["deflicker_target_level"]?.doubleValue else {
+                throw AdvancedWorkflowFailure(message: "Real exposure mode metadata unavailable.")
+            }
+            let before = store.currentEdits
+            let manual = AdvancedFieldPresentation(schema: schema, values: editor.values)
+            try require(manual.hasExposureSemantics && manual.automatic == false,
+                "Pinned exposure presentation did not recognize the real manual mode.")
+            try require(!manual.fields.contains { $0.name == "deflicker_target_level" },
+                "Inactive automatic controls were shown in manual mode.")
+            let baselinePixels = try pixels(baseline.imageURL)
+            editor.setValue("deflicker_percentile", value: .number(percentile + 5))
+            editor.setValue("deflicker_target_level", value: .number(target + 1))
+            let inactive = try await appliedPreview(editor: editor, store: store)
+            try require(try pixels(inactive.imageURL) == baselinePixels,
+                "Automatic settings unexpectedly changed manual-mode RAW pixels.")
+            editor.setValue("mode", value: .integer(automatic.value))
+            let automaticFields = AdvancedFieldPresentation(schema: schema, values: editor.values)
+            try require(automaticFields.automatic == true
+                && automaticFields.fields.contains { $0.name == "deflicker_target_level" }
+                && !automaticFields.fields.contains { $0.name == "exposure" },
+                "Automatic mode did not replace the inactive manual controls.")
+            let automaticPreview = try await appliedPreview(editor: editor, store: store)
+            let automaticPixels = try pixels(automaticPreview.imageURL)
+            editor.setValue("deflicker_target_level", value: .number(target + 2))
+            let changed = try await appliedPreview(editor: editor, store: store)
+            try require(try pixels(changed.imageURL) != automaticPixels,
+                "Active automatic target did not change real RAW pixels.")
+            store.undo()
+            store.undo()
+            store.undo()
+            await store.waitForRender()
+            editor.synchronize()
+            await editor.waitForLoad()
+            try require(store.currentEdits == before, "Mode checks failed to restore complete module state.")
+            print("PASS actual RAW manual/automatic control semantics and preserved inactive parameters")
+        }
+
+        @MainActor
+        private static func appliedPreview(
+            editor: AdvancedModuleEditor, store: EditorStore
+        ) async throws -> RenderedPhoto {
+            editor.apply()
+            await editor.waitForApply()
+            await editor.waitForLoad()
+            await store.waitForRender()
+            guard let preview = store.preview, store.errorMessage == nil else {
+                throw AdvancedWorkflowFailure(message: "Exposure mode adjustment did not render.")
+            }
+            return preview
+        }
+
+        @MainActor
+        private static func options(
+            editor: AdvancedModuleEditor, store: EditorStore, engine: any PhotoEngine
+        ) async throws {
+            guard let schema = editor.schema else {
+                throw AdvancedWorkflowFailure(message: "Missing options schema.")
+            }
+            let enumFields = schema.fields.filter { $0.kind == .enumeration }
+            let boolFields = schema.fields.filter { $0.kind == .bool }
+            guard let enumField = enumFields.first, let choice = enumField.choices.first,
+                let boolField = boolFields.first, case .boolean(let current) = editor.values[boolField.name]
+            else {
+                throw AdvancedWorkflowFailure(message: "Real exposure did not expose enum/bool controls.")
+            }
+            editor.setValue(enumField.name, value: .integer(choice.value))
+            editor.setValue(boolField.name, value: .boolean(!current))
+            editor.draftName = "Advanced integration"
+            editor.apply()
+            await editor.waitForApply()
+            await editor.waitForLoad()
+            guard let module = store.currentEdits.modules.first(where: { $0.id == editor.selectedModuleID })
+            else {
+                throw AdvancedWorkflowFailure(message: "Option apply lost module identity.")
+            }
+            let decoded = try await engine.parameters(for: module)
+            try require(
+                enumField.choiceValue(for: decoded[enumField.name] ?? .text("")) == choice.value,
+                "Enum selection did not roundtrip to a declared choice.")
+            try require(decoded[boolField.name] == .boolean(!current), "Boolean selection did not roundtrip.")
+            try require(module.name == "Advanced integration", "Instance label did not apply.")
+            editor.draftEnabled.toggle()
+            let enabled = editor.draftEnabled
+            editor.apply()
+            await editor.waitForApply()
+            await editor.waitForLoad()
+            try require(
+                store.currentEdits.modules.first { $0.id == module.id }?.enabled == enabled,
+                "Enabled state did not apply.")
+            editor.resetDefaults()
+            for field in editor.resettableFields {
+                guard let actual = editor.values[field.name], let value = field.defaultValue else { continue }
+                try require(field.valuesEqual(actual, value), "Reset ignored a supported default.")
+            }
+            editor.discard()
+            try require(!editor.hasChanges, "Discard did not restore committed parameters.")
+            print(
+                "PASS enum symbols/choice integers, booleans, instance label, enabled state and supported defaults"
+            )
+        }
+
+        @MainActor
+        private static func integerEntry(editor: AdvancedModuleEditor, store: EditorStore) async throws {
+            editor.chooseOperation("rawprepare")
+            await editor.waitForLoad()
+            guard let field = editor.schema?.fields.first(where: { $0.name == "left" }),
+                case .integer(let previous) = editor.values[field.name],
+                let module = store.currentEdits.modules.first(where: { $0.id == editor.selectedModuleID }),
+                let value = field.parsedValue(String(previous + 2)) else {
+                throw AdvancedWorkflowFailure(message: "Real rawprepare integer field unavailable.")
+            }
+            try require(field.parsedValue("2.5") == nil, "Integer entry accepted a fractional value.")
+            editor.setValue(field.name, value: value)
+            editor.apply()
+            await editor.waitForApply()
+            await editor.waitForLoad()
+            await store.waitForRender()
+            guard let updated = store.currentEdits.modules.first(where: { $0.id == module.id }) else {
+                throw AdvancedWorkflowFailure(message: "Integer apply lost module identity.")
+            }
+            let actual = try await store.engine.parameters(for: updated)
+            try require(actual[field.name] == value, "Exact integer entry did not roundtrip.")
+            let expected = try await store.engine.updating(module: module, values: [field.name: value])
+            try require(updated == expected, "Integer entry changed unknown compound parameters.")
+            try require(store.errorMessage == nil, "Integer edit did not render: \(store.errorMessage ?? "")")
+            store.undo()
+            await store.waitForRender()
+            editor.synchronize()
+            await editor.waitForLoad()
+            print("PASS real integer entry, fractional rejection, full blob preservation and rendering")
+        }
+
+        @MainActor
+        private static func switching(
+            editor: AdvancedModuleEditor, store: EditorStore, fixture: URL, firstID: UUID
+        ) async throws {
+            await store.importURLs([fixture])
+            guard let secondID = store.selectedAssetID, secondID != firstID else {
+                throw AdvancedWorkflowFailure(message: "Second real RAW import failed.")
+            }
+            let secondEdits = store.currentEdits
+            store.selectAsset(firstID)
+            editor.activate()
+            await editor.waitForLoad()
+            editor.chooseOperation("exposure")
+            await editor.waitForLoad()
+            editor.setValue("exposure", value: .number(1.23456789))
+            editor.apply()
+            await Task.yield()
+            store.selectAsset(secondID)
+            editor.activate()
+            await editor.waitForApply()
+            await editor.waitForLoad()
+            await store.waitForRender()
+            try require(store.currentEdits == secondEdits, "Stale async module edit affected another photo.")
+            try require(store.preview?.assetID == secondID, "Stale module render affected another photo.")
+            try await returnSwitch(editor: editor, store: store, firstID: firstID, secondID: secondID)
+            editor.chooseOperation("tonecurve")
+            await Task.yield()
+            editor.chooseOperation("exposure")
+            await editor.waitForLoad()
+            try require(
+                editor.selectedOperation == "exposure" && editor.schema?.operation == "exposure",
+                "Stale schema replaced the selected operation.")
+            editor.cancel()
+            print("PASS cancelled apply on image switch and stale schema suppression")
+        }
+
+        @MainActor
+        private static func returnSwitch(
+            editor: AdvancedModuleEditor, store: EditorStore, firstID: UUID, secondID: UUID
+        ) async throws {
+            store.selectAsset(firstID)
+            editor.activate()
+            await editor.waitForLoad()
+            let expected = store.currentEdits
+            editor.setValue("exposure", value: .number(1.987654))
+            editor.apply()
+            await Task.yield()
+            store.selectAsset(secondID)
+            store.selectAsset(firstID)
+            await editor.waitForApply()
+            await editor.waitForLoad()
+            await store.waitForRender()
+            try require(store.currentEdits == expected, "Stale A/B/A edit bypassed the generation guard.")
+            print("PASS stale Apply rejected after A/B/A returns to identical document state")
+        }
+
+        private static func require(_ condition: Bool, _ message: String) throws {
+            if !condition { throw AdvancedWorkflowFailure(message: message) }
+        }
+
+        private static func digest(_ url: URL) throws -> String {
+            SHA256.hash(data: try Data(contentsOf: url)).map { String(format: "%02x", $0) }.joined()
+        }
+
+        private static func pixels(_ url: URL) throws -> String {
+            guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+                let image = CGImageSourceCreateImageAtIndex(source, 0, nil),
+                let data = image.dataProvider?.data
+            else {
+                throw AdvancedWorkflowFailure(message: "Cannot decode real developed pixels.")
+            }
+            return SHA256.hash(data: data as Data).map { String(format: "%02x", $0) }.joined()
+        }
+    }
+    extension AdvancedModuleWorkflow {
+        @MainActor
+        private static func rapidReleaseAndSave(editor: AdvancedModuleEditor, store: EditorStore) async throws {
+            editor.synchronize()
+            await editor.waitForLoad()
+            let baseline = store.currentEdits
+            editor.sliderEditingChanged(true)
+            editor.setSliderValue("exposure", value: .number(0.25))
+            try await waitForLiveRender(store, baseline: baseline)
+            editor.setSliderValue("exposure", value: .number(0.75))
+            editor.sliderEditingChanged(false)
+            let permitted = store.prepareToClose(.save)
+            try require(!permitted, "Close/save accepted an earlier preview while the final slider sample was queued.")
+            do {
+                try store.saveCatalog()
+                throw AdvancedWorkflowFailure(message: "Save accepted an unfinished slider transaction.")
+            } catch is CatalogError {}
+            store.clearError()
+            await editor.waitForApply()
+            await editor.waitForLoad()
+            await store.waitForRender()
+            guard let module = store.currentEdits.modules.first(where: { $0.id == editor.selectedModuleID }) else {
+                throw AdvancedWorkflowFailure(message: "Final queued module was lost.")
+            }
+            let values = try await store.engine.parameters(for: module)
+            try require(values["exposure"]?.doubleValue == 0.75, "The final slider sample was discarded.")
+            try require(!store.isUpdatingEdits && store.prepareToClose(.save),
+                "Completed slider transaction did not permit close/save.")
+            let reopened = try EditorStore(engine: store.engine, catalogURL: store.catalogURL)
+            try require(reopened.currentEdits == store.currentEdits,
+                "Close/save reopened an earlier preview instead of the final slider value.")
+            print("PASS rapid slider release plus immediate Save/close blocks until final 0.75 is persisted")
+        }
+
+        @MainActor
+        private static func waitForLiveRender(_ store: EditorStore, baseline: EditState) async throws {
+            for _ in 0..<3000 {
+                if store.currentEdits != baseline, store.isRendering { return }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            throw AdvancedWorkflowFailure(message: "The first live sample did not enter real rendering.")
+        }
+
+        @MainActor
+        private static func liveGestures(editor: AdvancedModuleEditor, store: EditorStore) async throws {
+            editor.synchronize()
+            await editor.waitForLoad()
+            let observer = try await pinnedObserver(store)
+            let observerRevision = observer.editorRevision
+            let before = store.currentEdits
+            let historyCount = store.history.count
+            let historyIndex = store.selectedDocument?.historyIndex ?? -1
+            guard let frame = store.preview else {
+                throw AdvancedWorkflowFailure(message: "Missing preview before live gesture.")
+            }
+            let beforePixels = try pixels(frame.imageURL)
+            editor.sliderEditingChanged(true)
+            editor.setSliderValue("exposure", value: .number(1.12))
+            let firstPixels = try await livePreview(editor: editor, store: store, exposure: 1.12)
+            observer.synchronize()
+            try require(observer.canEdit && observer.editorRevision == observerRevision,
+                "Another adjustment group reloaded during an unrelated live preview.")
+            try require(firstPixels != beforePixels, "Dragging did not develop a live RAW preview.")
+            try require(store.history.count == historyCount, "Live preview created premature history.")
+            editor.setSliderValue("exposure", value: .number(1.21))
+            await Task.yield()
+            editor.setSliderValue("exposure", value: .number(1.25))
+            editor.setSliderValue("exposure", value: .number(1.34))
+            let finalPixels = try await livePreview(editor: editor, store: store, exposure: 1.34)
+            try require(firstPixels != finalPixels, "The second drag value left live pixels unchanged.")
+            try require(store.history.count == historyCount, "Each drag value created an undo entry.")
+            editor.sliderEditingChanged(false)
+            await editor.waitForApply()
+            await editor.waitForLoad()
+            try require(store.selectedDocument?.historyIndex == historyIndex + 1
+                && store.history.count == historyIndex + 2, "Gesture end did not create exactly one history entry.")
+            store.undo()
+            await store.waitForRender()
+            try require(store.currentEdits == before, "Gesture Undo did not restore full baseline edits.")
+            try require(try previewPixels(store) == beforePixels, "Gesture Undo pixels changed.")
+            store.redo()
+            await store.waitForRender()
+            try require(try previewPixels(store) == finalPixels, "Gesture Redo pixels changed.")
+            try await cancelledGesture(editor: editor, store: store)
+            print("PASS live RAW previews during dragging, one gesture history entry and exact Undo/Redo")
+        }
+
+        @MainActor
+        private static func livePreview(
+            editor: AdvancedModuleEditor, store: EditorStore, exposure: Double
+        ) async throws -> String {
+            await editor.waitForPreview()
+            await store.waitForRender()
+            guard let module = store.currentEdits.modules.first(where: { $0.id == editor.selectedModuleID }),
+                let frame = store.preview else {
+                throw AdvancedWorkflowFailure(message: "Live module preview was not accepted.")
+            }
+            let decoded = try await store.engine.parameters(for: module)
+            try require(abs((decoded["exposure"]?.doubleValue ?? .infinity) - exposure) < 0.000_001,
+                "The live module bytes did not contain the latest drag value.")
+            return try pixels(frame.imageURL)
+        }
+
+        @MainActor
+        private static func previewPixels(_ store: EditorStore) throws -> String {
+            guard let frame = store.preview else {
+                throw AdvancedWorkflowFailure(message: "Missing developed preview.")
+            }
+            return try pixels(frame.imageURL)
+        }
+
+        @MainActor
+        private static func pinnedObserver(_ store: EditorStore) async throws -> AdvancedModuleEditor {
+            guard let module = store.currentEdits.modules.first(where: { $0.operation == "rawprepare" }) else {
+                throw AdvancedWorkflowFailure(message: "Real RAW preparation module unavailable.")
+            }
+            let observer = AdvancedModuleEditor(store: store, moduleID: module.id)
+            observer.activate()
+            await observer.waitForLoad()
+            try require(observer.selectedModuleID == module.id && observer.canEdit,
+                "Pinned adjustment group did not load the actual module instance.")
+            return observer
+        }
+
+        @MainActor
+        private static func cancelledGesture(editor: AdvancedModuleEditor, store: EditorStore) async throws {
+            editor.synchronize()
+            await editor.waitForLoad()
+            let baseline = store.currentEdits
+            let count = store.history.count
+            editor.sliderEditingChanged(true)
+            editor.setSliderValue("exposure", value: .number(1.75))
+            _ = try await livePreview(editor: editor, store: store, exposure: 1.75)
+            editor.cancel()
+            await store.waitForRender()
+            try require(store.currentEdits == baseline && store.history.count == count,
+                "Cancelled live gesture changed the baseline or added history.")
+            editor.activate()
+            await editor.waitForLoad()
+            editor.setSliderValue("exposure", value: .number(1.34))
+            await editor.waitForApply()
+            await editor.waitForLoad()
+            try require(store.history.count == count, "No-op slider keyboard edit created history.")
+        }
+    }
+#endif
