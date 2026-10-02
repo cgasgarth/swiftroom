@@ -1,0 +1,49 @@
+{
+  "engine": {
+    "name": "darktable",
+    "version": "5.6.0",
+    "repository": "https://github.com/darktable-org/darktable",
+    "commit": "3c17b2976793303c186a5f64e8c9635ecf8b15d3",
+    "license": "GPL-3.0-or-later",
+    "licenseFile": "COPYING",
+    "runtimeOrigin": "/Applications/darktable.app",
+    "requiredABIFlags": [
+      "HAVE_OPENCL",
+      "_DARWIN_C_SOURCE",
+      "_RELEASE"
+    ],
+    "processing": "Original CPU pipeline; OpenCL runtime disabled during validation",
+    "runtimeLibrarySHA256": "922a2d075e8c59d0e9d7f27e73e80cab1a39f3bf64a5ba470ce19b86945fa8db",
+    "runtimeABIGuards": [
+      "Pinned libdarktable SHA256 checked before build, staging and every native helper invocation",
+      "Introspection API version 8",
+      "All introspected plugins report matching dt_iop_module_t size and default_params offset"
+    ]
+  },
+  "derivedFiles": [
+    {
+      "path": "Helper/module_bridge.c",
+      "source": "src/mcp/dt_bridge.c",
+      "commit": "b9feba28c4a7a4f9906a1a4eeaf084fd441ba08b",
+      "changes": "Scalar introspection subset with full field paths, source descriptions, complete numeric defaults/bounds, strict primitive/range/enum validation and seeded full-blob updates; render/catalog bridge omitted"
+    },
+    {
+      "path": "Helper/mcp/dt_bridge.h",
+      "source": "src/mcp/dt_bridge.h",
+      "commit": "b9feba28c4a7a4f9906a1a4eeaf084fd441ba08b"
+    },
+    {
+      "path": "Helper/white_balance.c",
+      "source": "src/iop/temperature.c",
+      "commit": "3c17b2976793303c186a5f64e8c9635ecf8b15d3",
+      "changes": "Original spectral temperature conversion plus headless camera-matrix coefficient adapter"
+    }
+  ],
+  "buildPrerequisites": [
+    "macOS Apple Silicon, installed Command Line Tools SDK and clang",
+    "Installed darktable 5.6.0 official Mac bundle",
+    "Existing pkg-config headers: json-glib-1.0, gtk+-3.0, lcms2, librsvg-2.0",
+    "Pinned source restored by fetch-source.sh; no software installation"
+  ],
+  "distributionStatus": "Local development bundle. Dependency notices and corresponding-source completeness require review before distributing compiled binaries."
+}
