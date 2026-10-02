@@ -93,7 +93,7 @@ actor DarktablePhotoEngine: PhotoEngine {
         try ExportProtection.validate(request)
         try Task.checkCancellation()
         let manager = FileManager.default
-        if manager.fileExists(atPath: request.destinationURL.path) {
+        if request.overwriteAuthorization != nil {
             _ = try manager.replaceItemAt(request.destinationURL, withItemAt: result.output)
         } else {
             try manager.moveItem(at: result.output, to: request.destinationURL)
