@@ -42,7 +42,7 @@ struct MaskNumericControl: View {
     }
 
     private func validate(updateValue: Bool) {
-        let parsed = try? Double(entry, format: .number.locale(.current))
+        let parsed = try? Double(entry, format: .number.locale(.current), lenient: false)
         isValid = parsed.map { $0.isFinite && range.contains($0) } ?? false
         onValidity(fieldID, isValid)
         if updateValue, isValid, let parsed { value = parsed }

@@ -6,6 +6,7 @@ struct MaskInspectorContext: Equatable {
     let catalogID: UUID
     let catalogURL: URL
     let edits: EditState
+    let revision: UInt64
 }
 
 enum NewMaskKind: String, CaseIterable, Identifiable {
@@ -44,7 +45,7 @@ final class MaskInspectorModel: ObservableObject {
     var context: MaskInspectorContext {
         MaskInspectorContext(
             assetID: store.selectedAssetID, catalogID: store.catalogID,
-            catalogURL: store.catalogURL, edits: store.currentEdits)
+            catalogURL: store.catalogURL, edits: store.currentEdits, revision: store.editRevision)
     }
 
     var selectedForm: MaskForm? { state?.forms.first { $0.id == selectedFormID } }
@@ -60,9 +61,13 @@ final class MaskInspectorModel: ObservableObject {
         store.engine is any MaskEditingEngine && store.selectedAssetID != nil && state != nil
             && !isLoading && !isApplying && context == expectedContext
     }
-    var canEditBlend: Bool {
-        canEdit && selectedBlend?.version == 14 && selectedBlend?.parameters.isEmpty == false
+    var hasSupportedBlendSeed: Bool {
+        guard let blend = selectedBlend, blend.version == 14,
+            let module = modules.first(where: { $0.id == blend.moduleID }),
+            module.blendVersion == 14, let seed = module.blendParameters, !seed.isEmpty else { return false }
+        return seed == blend.parameters
     }
+    var canEditBlend: Bool { canEdit && hasSupportedBlendSeed }
     var nameIsValid: Bool { draftName.utf8.count <= 127 }
     var hasChanges: Bool {
         let formChanged = selectedForm.map { draftName != $0.name || draftGeometry != $0.geometry } ?? false
@@ -122,7 +127,7 @@ final class MaskInspectorModel: ObservableObject {
     }
 
     func synchronize() {
-        guard context != expectedContext else { return }
+        guard context != expectedContext || (!isLoading && state == nil) else { return }
         let discarded = hasChanges
         activate()
         if discarded { statusMessage = "Draft discarded because the photo or its history changed." }
@@ -323,7 +328,7 @@ extension MaskInspectorModel {
                 let accepted = try await store.commitCurrentMasks(
                     assetID: assetID,
                     catalogID: expectedContext.catalogID, expectedEdits: expectedContext.edits,
-                    edit: edit, label: label)
+                    expectedRevision: expectedContext.revision, edit: edit, label: label)
                 try Task.checkCancellation()
                 guard applyTicket == ticket else { return }
                 activate()

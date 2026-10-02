@@ -15,6 +15,8 @@ struct MaskBlendFields: View {
             }.disabled(model.isApplying).accessibilityIdentifier("masks.blend.module")
             if let blend = model.selectedBlend {
                 blendFields(blend)
+            } else if model.isLoading {
+                Text("Reading selected module blending…").font(.callout).foregroundStyle(.secondary)
             } else {
                 Text("This module has no supported blend seed. Its existing data is retained.")
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -24,7 +26,7 @@ struct MaskBlendFields: View {
 
     @ViewBuilder
     private func blendFields(_ blend: BlendState) -> some View {
-        if model.canEditBlend {
+        if model.hasSupportedBlendSeed {
             VStack(alignment: .leading, spacing: 12) {
                 MaskNumericControl(
                     title: "Opacity (%)", fieldID: "blend.opacity", range: 0...100,
@@ -50,10 +52,11 @@ struct MaskBlendFields: View {
                         .font(.caption).foregroundStyle(.secondary).fixedSize(
                             horizontal: false, vertical: true)
                 }
-            }.id(model.draftRevision)
+            }.disabled(!model.canEditBlend).id(model.draftRevision)
         } else {
             Text(
-                "Blend version \(blend.version) is read-only. Opacity \(blend.opacity.formatted())%, "
+                "This module has no compatible accepted blend seed. Engine blend version \(blend.version), "
+                    + "opacity \(blend.opacity.formatted())%, "
                     + "mode \(blend.mode), mask \(blend.maskID). Its original bytes are retained."
             )
             .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)

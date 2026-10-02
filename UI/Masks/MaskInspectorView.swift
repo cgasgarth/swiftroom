@@ -53,8 +53,8 @@ struct MaskInspectorView: View {
         .task(
             id: MaskInspectorContext(
                 assetID: store.selectedAssetID, catalogID: store.catalogID,
-                catalogURL: store.catalogURL, edits: store.currentEdits)
-        ) { model.activate() }
+                catalogURL: store.catalogURL, edits: store.currentEdits, revision: store.editRevision)
+        ) { model.synchronize() }
         .onAppear { model.chooseModule(selectedModuleID) }
         .onChange(of: selectedModuleID) { _, id in model.chooseModule(id) }
         .onDisappear { model.cancel() }

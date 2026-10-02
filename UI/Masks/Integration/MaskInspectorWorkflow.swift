@@ -20,12 +20,19 @@
 
         @MainActor
         private static func execute() async throws {
+            if CommandLine.arguments.count == 4, CommandLine.arguments[1] == "--opaque" {
+                try await MaskOpaqueWorkflow.execute(
+                    fixture: URL(fileURLWithPath: CommandLine.arguments[2]),
+                    xmp: URL(fileURLWithPath: CommandLine.arguments[3]))
+                return
+            }
             guard let path = CommandLine.arguments.dropFirst().first else {
                 throw MaskWorkflowFailure(message: "Provide a copied RAW fixture path.")
             }
             let fixture = URL(fileURLWithPath: path)
             let root = URL(fileURLWithPath: "/tmp/swiftroom-mask-inspector-integration")
                 .appendingPathComponent(UUID().uuidString)
+            evidence("RUN \(root.path)")
             let catalogURL = root.appendingPathComponent("Catalog")
             let engine = NativePhotoEngineFactory.make(cacheDirectory: root.appendingPathComponent("Cache"))
             let store = try EditorStore(engine: engine, catalogURL: catalogURL)
@@ -54,7 +61,7 @@
             let copied = try CatalogRepository(rootURL: catalogURL).sourceURL(for: document)
             try require(try digest(copied) == originalHash, "Copied catalog original was modified.")
             model.cancel()
-            print("MASK INSPECTOR INTEGRATION PASS \(root.path)")
+            evidence("MASK INSPECTOR INTEGRATION PASS \(root.path)")
         }
 
         @MainActor
@@ -90,7 +97,7 @@
                 "Circle values did not roundtrip to the engine.")
             try require(store.history.count == editCount + 1, "Numeric draft created extra history entries.")
             try require(!model.hasChanges, "Decoded Float geometry became a false dirty draft.")
-            print("PASS real circle add/edit, numeric validation and accepted history")
+            evidence("PASS real circle add/edit, numeric validation and accepted history")
             return circle.id
         }
 
@@ -114,7 +121,7 @@
             try require(
                 acceptedEllipse.featherMode == .proportional
                     && abs(acceptedEllipse.feather - 1.5) < 0.000_001, "Ellipse options did not roundtrip.")
-            print("PASS real ellipse add/edit, radius, rotation and feather mode")
+            evidence("PASS real ellipse add/edit, radius, rotation and feather mode")
         }
 
         @MainActor
@@ -137,7 +144,7 @@
                 acceptedGradient.transition == .sigmoidal
                     && abs(acceptedGradient.curvature - 0.4) < 0.000_001,
                 "Gradient options did not roundtrip.")
-            print("PASS real gradient add/edit, curvature, rotation and transition")
+            evidence("PASS real gradient add/edit, curvature, rotation and transition")
         }
     }
 
@@ -184,7 +191,7 @@
             model.removeMember(0)
             model.apply()
             await model.waitForApply()
-            print("PASS ordered group members, opacity, combine/invert and member removal")
+            evidence("PASS ordered group members, opacity, combine/invert and member removal")
             return group.id
         }
 
@@ -224,7 +231,7 @@
             try await blendScalars(model: model, assigned: assigned)
             model.chooseForm(groupID)
             try require(!model.selectedReferences.isEmpty, "Assigned group deletion was not guarded.")
-            print("PASS RAW mask pixel effect, seeded opacity/mode/reverse and module assignment")
+            evidence("PASS RAW mask pixel effect, seeded opacity/mode/reverse and module assignment")
         }
 
         @MainActor
@@ -303,7 +310,7 @@
             model.synchronize()
             await model.waitForLoad()
             try require(!model.hasChanges, "History navigation retained a stale mask draft.")
-            print("PASS undo/redo developed pixels and full-state catalog save/reopen")
+            evidence("PASS undo/redo developed pixels and full-state catalog save/reopen")
         }
 
         @MainActor
@@ -327,7 +334,7 @@
             try require(
                 model.state?.forms.contains(where: { $0.id == gradient.id }) == true,
                 "Undo did not restore removed geometry.")
-            print("PASS mask deletion, dangling-reference guard and undo restoration")
+            evidence("PASS mask deletion, dangling-reference guard and undo restoration")
         }
 
         @MainActor
@@ -344,6 +351,8 @@
             await model.waitForLoad()
             model.chooseForm(circleID)
             let accepted = store.currentEdits
+            let acceptedHistory = store.history
+            try await staleDraft(model: model, store: store, firstID: firstID, secondID: secondID)
             model.draftName = "Cancelled draft"
             model.apply()
             model.cancelApply()
@@ -369,13 +378,47 @@
             try require(store.documents.isEmpty, "Stale edit affected another catalog.")
             try store.openCatalog(at: originalCatalog)
             try require(
-                store.currentEdits == accepted,
+                store.documents.first(where: { $0.id == firstID })?.edits == accepted
+                    && store.documents.first(where: { $0.id == firstID })?.history == acceptedHistory,
                 "Catalog switch accepted the stale edit into original history.")
-            print("PASS real-helper cancel and stale asset A/B/A/catalog suppression")
+            evidence("PASS real-helper cancel and stale asset A/B/A/catalog suppression")
+        }
+
+        @MainActor
+        private static func staleDraft(
+            model: MaskInspectorModel, store: EditorStore,
+            firstID: UUID, secondID: UUID
+        ) async throws {
+            model.draftName = "Draft before selection round trip"
+            let edits = store.currentEdits
+            let history = store.history
+            store.selectAsset(secondID)
+            store.selectAsset(firstID)
+            try require(
+                store.currentEdits == edits && !model.canApply,
+                "Identical edit bytes allowed a draft from an old selection revision.")
+            model.apply()
+            try require(
+                store.history == history, "Stale draft added accepted history before the engine call.")
+            model.synchronize()
+            await model.waitForLoad()
+            model.draftName = "Draft before history round trip"
+            store.undo()
+            store.redo()
+            try require(
+                store.currentEdits == edits && !model.canApply,
+                "Undo/redo to identical edits allowed an old mask draft.")
+            model.synchronize()
+            await model.waitForLoad()
+            try require(!model.hasChanges, "Revision refresh retained an old numeric draft.")
+            evidence("PASS stale drafts rejected before Apply after asset/history revision round trips")
         }
 
         private static func require(_ condition: Bool, _ message: String) throws {
             if !condition { throw MaskWorkflowFailure(message: message) }
+        }
+        private static func evidence(_ message: String) {
+            FileHandle.standardOutput.write(Data("\(message)\n".utf8))
         }
         private static func digest(_ url: URL) throws -> String {
             SHA256.hash(data: try Data(contentsOf: url)).map { String(format: "%02x", $0) }.joined()

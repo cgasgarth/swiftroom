@@ -9,7 +9,8 @@ LIBRARY_ROOT="${NATIVE_PHOTO_LIBRARY_SOURCE:-$CORE_ROOT/Library}"
 SWIFTC="${NATIVE_PHOTO_SWIFTC:-/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc}"
 SDK="${NATIVE_PHOTO_SDK:-/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk}"
 mkdir -p "$PROJECT/build/module-cache"
-SOURCES=("$MASKS_ROOT/Integration/MaskInspectorWorkflow.swift")
+SOURCES=()
+while IFS= read -r path; do SOURCES+=("$path"); done < <(find "$MASKS_ROOT/Integration" -name '*.swift' -type f | sort)
 while IFS= read -r path; do SOURCES+=("$path"); done < <(find "$MASKS_ROOT" -maxdepth 1 -name '*.swift' -type f | sort)
 while IFS= read -r path; do SOURCES+=("$path"); done < <(find "$CORE_ROOT" "$ENGINE_ROOT/Native" -name '*.swift' -type f ! -path "$CORE_ROOT/Masks/*" | sort)
 while IFS= read -r path; do SOURCES+=("$path"); done < <(find "$CONTRACT_ROOT" -name '*.swift' -type f | sort)
