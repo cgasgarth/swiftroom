@@ -232,6 +232,7 @@ char *np_pipeline(JsonObject *request, gboolean prepare, char **err)
   cmsHPROFILE output_profile = NULL;
   if(!prepare)
   {
+    if(!np_bezier_render_mode(&dev, err)) { dt_dev_cleanup(&dev); return NULL; }
     const char *format_name = json_object_get_string_member(request, "format");
     dt_imageio_module_format_t *format = dt_imageio_get_format_by_name(format_name);
     if(!format) { *err = g_strdup("export format unavailable"); dt_dev_cleanup(&dev); return NULL; }

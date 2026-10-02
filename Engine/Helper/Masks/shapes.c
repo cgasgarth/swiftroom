@@ -87,7 +87,8 @@ dt_masks_form_t *np_mask_geometry(JsonObject *geometry, dt_mask_id_t id, char **
     ? json_object_get_string_member(geometry, "kind") : NULL;
   dt_masks_type_t type = !kind ? DT_MASKS_NONE : !strcmp(kind, "circle") ? DT_MASKS_CIRCLE
     : !strcmp(kind, "ellipse") ? DT_MASKS_ELLIPSE : !strcmp(kind, "gradient") ? DT_MASKS_GRADIENT
-    : !strcmp(kind, "group") ? DT_MASKS_GROUP : DT_MASKS_NONE;
+    : !strcmp(kind, "group") ? DT_MASKS_GROUP : !strcmp(kind, "path") ? DT_MASKS_PATH
+    : !strcmp(kind, "brush") ? DT_MASKS_BRUSH : DT_MASKS_NONE;
   if(type == DT_MASKS_NONE) { np_mask_fail(err, "unsupported mask geometry"); return NULL; }
   dt_masks_form_t *form = dt_masks_create(type);
   if(!form) { np_mask_fail(err, "mask allocation failed"); return NULL; }
@@ -100,7 +101,8 @@ dt_masks_form_t *np_mask_geometry(JsonObject *geometry, dt_mask_id_t id, char **
   else
   {
     JsonNode *node = json_object_get_member(geometry, "value");
-    valid = group(form, node && JSON_NODE_HOLDS_ARRAY(node) ? json_node_get_array(node) : NULL, err);
+    JsonArray *array = node && JSON_NODE_HOLDS_ARRAY(node) ? json_node_get_array(node) : NULL;
+    valid = type == DT_MASKS_GROUP ? group(form, array, err) : np_bezier_geometry(form, array, err);
   }
   if(!valid) { dt_masks_free_form(form); return NULL; }
   return form;

@@ -3,6 +3,7 @@
 gboolean np_mask_form_editable(const dt_masks_form_t *form)
 {
   if(form->version != dt_masks_version()) return FALSE;
+  if(form->type == DT_MASKS_PATH || form->type == DT_MASKS_BRUSH) return np_bezier_supported(form);
   if(form->type == DT_MASKS_GROUP)
   {
     for(GList *it = form->points; it; it = it->next)
@@ -34,10 +35,12 @@ static void geometry(JsonBuilder *builder, const dt_masks_form_t *form)
   if(!np_mask_form_editable(form)) { json_builder_add_null_value(builder); return; }
   json_builder_begin_object(builder);
   const char *kind = form->type == DT_MASKS_CIRCLE ? "circle" : form->type == DT_MASKS_ELLIPSE
-    ? "ellipse" : form->type == DT_MASKS_GRADIENT ? "gradient" : "group";
+    ? "ellipse" : form->type == DT_MASKS_GRADIENT ? "gradient" : form->type == DT_MASKS_PATH
+    ? "path" : form->type == DT_MASKS_BRUSH ? "brush" : "group";
   np_mask_text(builder, "kind", kind);
   json_builder_set_member_name(builder, "value");
-  if(form->type == DT_MASKS_GROUP)
+  if(form->type == DT_MASKS_PATH || form->type == DT_MASKS_BRUSH) np_bezier_write(builder, form);
+  else if(form->type == DT_MASKS_GROUP)
   {
     json_builder_begin_array(builder);
     for(GList *it = form->points; it; it = it->next)

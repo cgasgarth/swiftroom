@@ -7,6 +7,10 @@
 gboolean np_masks_apply(dt_develop_t *dev, JsonObject *edit, char **err);
 void np_masks_state(JsonBuilder *builder, dt_develop_t *dev);
 gboolean np_mask_form_editable(const dt_masks_form_t *form);
+gboolean np_bezier_geometry(dt_masks_form_t *form, JsonArray *points, char **err);
+gboolean np_bezier_supported(const dt_masks_form_t *form);
+void np_bezier_write(JsonBuilder *builder, const dt_masks_form_t *form);
+gboolean np_bezier_render_mode(dt_develop_t *dev, char **err);
 dt_masks_form_t *np_mask_geometry(JsonObject *geometry, dt_mask_id_t id, char **err);
 gboolean np_blend_patch(dt_develop_t *dev, JsonObject *entry, char **err);
 

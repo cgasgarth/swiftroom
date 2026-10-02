@@ -59,11 +59,13 @@ enum MaskGeometry: Equatable, Sendable {
     case ellipse(EllipseMask)
     case gradient(GradientMask)
     case group([MaskGroupMember])
+    case path([BezierMaskPoint])
+    case brush([BrushMaskPoint])
 }
 
 extension MaskGeometry: Codable {
     private enum CodingKeys: String, CodingKey { case kind, value }
-    private enum Kind: String, Codable { case circle, ellipse, gradient, group }
+    private enum Kind: String, Codable { case circle, ellipse, gradient, group, path, brush }
 
     init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -72,6 +74,8 @@ extension MaskGeometry: Codable {
         case .ellipse: self = .ellipse(try container.decode(EllipseMask.self, forKey: .value))
         case .gradient: self = .gradient(try container.decode(GradientMask.self, forKey: .value))
         case .group: self = .group(try container.decode([MaskGroupMember].self, forKey: .value))
+        case .path: self = .path(try container.decode([BezierMaskPoint].self, forKey: .value))
+        case .brush: self = .brush(try container.decode([BrushMaskPoint].self, forKey: .value))
         }
     }
 
@@ -89,6 +93,12 @@ extension MaskGeometry: Codable {
             try container.encode(value, forKey: .value)
         case .group(let value):
             try container.encode(Kind.group, forKey: .kind)
+            try container.encode(value, forKey: .value)
+        case .path(let value):
+            try container.encode(Kind.path, forKey: .kind)
+            try container.encode(value, forKey: .value)
+        case .brush(let value):
+            try container.encode(Kind.brush, forKey: .kind)
             try container.encode(value, forKey: .value)
         }
     }
